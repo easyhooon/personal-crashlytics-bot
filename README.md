@@ -124,6 +124,8 @@ python3 -B bot.py --probe bandalart
 
 ## Gmail 수신 운영 — 2026-10-07
 
+메시지 수신 이벤트와 1시간 폴백으로 전환하는 준비안은 [EVENT_TRANSITION.md](EVENT_TRANSITION.md)에 기록했다. 이 브랜치는 자동화 일정이나 운영 상태를 변경하지 않는다. 기존 15분 폴링은 새 흐름의 실제 처리를 검증한 뒤 중지한다.
+
 개인 Gmail에서 Firebase가 보낸 실제 여비/반다라트 Android 메일을 확인했다. 새 Gmail 인증이나 GitHub token, runner 설치, Firebase 설정 변경 없이 기존 연결을 사용한다. 수신 자동화 이름은 `개인 Crashlytics Gmail 수신`이고 Codex 앱에서 15분마다 이 로컬 대화를 실행한다. Mac이 켜져 있고 Codex 앱이 실행 중이며 기존 연결/인증을 사용할 수 있어야 한다. 앱의 자동화 카드에서 상태를 확인하거나 일시 중지한다. 예약 실행은 Codex 사용량을 소비한다.
 
 Firebase가 기존에 보내는 이메일 알림이 입력이다. 모든 개별 크래시를 조회하는 기능은 아니다. 알림 종류와 설정은 [Firebase 공식 알림 문서](https://firebase.google.com/docs/crashlytics/alerts)를 따른다. 이번 작업은 Firebase 알림 설정을 변경하지 않았다.

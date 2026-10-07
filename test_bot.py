@@ -228,6 +228,63 @@ class MailReceiverTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 mail_receiver.checkpoint(config, now + 600)
 
+    def test_event_then_hourly_fallback_reuses_message_id_and_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            config = Path(tmp) / 'receiver.json'
+            now = int(mail_receiver.time.time())
+            config.write_text(bot.json.dumps({
+                'gmail_link_id': 'personal-link', 'gmail_profile_id': 'personal-profile',
+                'start_epoch': now - 3600, 'last_scan_epoch': now - 1800,
+            }))
+            gh = FakeGitHub()
+            message = gmail_message(message_id='e1')
+            self.assertEqual(mail_receiver.receive(gh, message, state)['status'], 'processed')
+            writes = len(gh.writes)
+
+            scan = mail_receiver.poll_query(config)
+            self.assertEqual(scan['link_id'], 'personal-link')
+            self.assertEqual(scan['profile_id'], 'personal-profile')
+            self.assertIn(f'after:{now - 3600}', scan['query'])
+            self.assertEqual(mail_receiver.receive(gh, message, state)['status'], 'already-processed')
+            self.assertEqual(len(gh.writes), writes)
+            mail_receiver.checkpoint(config, scan['scan_started_epoch'])
+            self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], scan['scan_started_epoch'])
+            self.assertEqual(len(gh.issues), 1)
+
+    def test_failed_fallback_does_not_advance_checkpoint_and_replays_safely(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            config = Path(tmp) / 'receiver.json'
+            now = int(mail_receiver.time.time())
+            previous = now - 3 * 86400
+            config.write_text(bot.json.dumps({
+                'gmail_link_id': 'personal-link', 'gmail_profile_id': 'personal-profile',
+                'start_epoch': now - 7 * 86400, 'last_scan_epoch': previous,
+            }))
+            scan = mail_receiver.poll_query(config)
+            self.assertIn(f'after:{previous - 86400}', scan['query'])
+            gh = FakeGitHub()
+            first = gmail_message(message_id='a1')
+            second = gmail_message(message_id='a2')
+            mail_receiver.receive(gh, first, state)
+            original = gh.api
+
+            def fail(path, method='GET', data=None):
+                if path == 'user':
+                    raise RuntimeError('temporary GitHub failure')
+                return original(path, method, data)
+
+            gh.api = fail
+            with self.assertRaises(RuntimeError):
+                mail_receiver.receive(gh, second, state)
+            self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], previous)
+            gh.api = original
+            self.assertEqual(mail_receiver.receive(gh, first, state)['status'], 'already-processed')
+            self.assertEqual(mail_receiver.receive(gh, second, state)['results'][0]['status'], 'unchanged')
+            mail_receiver.checkpoint(config, scan['scan_started_epoch'])
+            self.assertEqual(len(gh.issues), 1)
+
     def test_unverified_sender_dev_ios_and_outside_projects_never_write(self):
         message = gmail_message()
         message['payload']['headers'][1]['value'] = 'mx.google.com; dkim=fail; dmarc=fail header.from=google.com'
