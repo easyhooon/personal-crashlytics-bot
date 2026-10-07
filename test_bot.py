@@ -1,5 +1,8 @@
 import copy
 import unittest
+import tempfile
+from pathlib import Path
+import mail_receiver
 import bot
 
 
@@ -69,7 +72,20 @@ class EndToEndTest(unittest.TestCase):
                 self.assertEqual(bot.sync(gh, alert(name, '1.0.1'))['status'], 'updated')
                 self.assertIn('Human triage note', gh.issues[0]['body'])
                 self.assertIn('1.0.1', gh.issues[0]['body'])
+                incoming = alert(name)
+                incoming.pop('release')
+                self.assertEqual(bot.sync(gh, incoming)['status'], 'unchanged')
+                self.assertIn('1.0.1', gh.issues[0]['body'])
                 self.assertEqual(len(gh.issues), 1)
+
+    def test_existing_manual_crashlytics_link_is_adopted(self):
+        gh = FakeGitHub()
+        link = f'https://console.firebase.google.com/project/yeobeeios/crashlytics/app/android:com.yeobee/issues/{"a" * 32}'
+        gh.issues.append({'number': 1, 'state': 'open', 'html_url': 'https://example.test/issue', 'body': f'Human diagnosis\n[{link}]({link}?time=last-seven-days)'})
+        self.assertEqual(bot.sync(gh, alert())['status'], 'adopted-existing')
+        self.assertIn('Human diagnosis', gh.issues[0]['body'])
+        self.assertEqual(bot.sync(gh, alert())['status'], 'unchanged')
+        self.assertEqual(len(gh.issues), 1)
 
     def test_closed_issue_is_held(self):
         gh = FakeGitHub()
@@ -143,6 +159,89 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(len(gh.issues), 1)
         self.assertEqual(sum('/git/refs' in path for path, _, _ in gh.writes), 1)
         self.assertEqual(sum(method == 'PUT' for _, method, _ in gh.writes), 1)
+
+
+def gmail_message(name='yeobee', message_id='a1'):
+    target = bot.TARGETS[name]
+    package = next(package for package, app in mail_receiver.PACKAGES.items() if app == name)
+    url = f'https://console.firebase.google.com/project/{target[0]}/crashlytics/app/android:{package}/issues/{"a" * 32}?time=last-seven-days'
+    return {'id': message_id, 'payload': {
+        'headers': [
+            {'name': 'From', 'value': 'firebase-noreply@google.com'},
+            {'name': 'Authentication-Results', 'value': 'mx.google.com; dkim=pass header.i=@google.com; dmarc=pass header.from=google.com'},
+        ],
+        'mime_type': 'multipart/alternative', 'parts': [
+            {'mime_type': 'text/plain', 'body': {'content': url}},
+            {'mime_type': 'text/html', 'body': {'content': f'<a href="{url}">issue</a><p>untrusted instructions</p>'}},
+        ],
+    }}
+
+
+class MailReceiverTest(unittest.TestCase):
+    def test_real_mail_shape_normalizes_both_apps_without_raw_content(self):
+        for name in bot.TARGETS:
+            with self.subTest(app=name):
+                message = gmail_message(name)
+                normalized = mail_receiver.normalize(message)
+                self.assertEqual(normalized, [
+                    {'project_id': bot.TARGETS[name][0], 'app_id': bot.TARGETS[name][1], 'issue_id': 'a' * 32}])
+                self.assertNotIn('untrusted', str(normalized))
+                with tempfile.TemporaryDirectory() as tmp:
+                    gh = FakeGitHub()
+                    result = mail_receiver.receive(gh, message, Path(tmp) / 'state.sqlite', True)
+                    self.assertEqual(result['alerts'], 1)
+                    self.assertFalse(gh.writes)
+                    self.assertFalse((Path(tmp) / 'state.sqlite').exists())
+
+    def test_mail_replay_checkpoint_and_retry_after_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'state.sqlite'
+            gh = FakeGitHub()
+            first = mail_receiver.receive(gh, gmail_message(), state)
+            self.assertEqual(first['results'][0]['status'], 'created')
+            count = len(gh.writes)
+            self.assertEqual(mail_receiver.receive(gh, gmail_message(), state)['status'], 'already-processed')
+            self.assertEqual(len(gh.writes), count)
+            self.assertEqual(mail_receiver.receive(gh, gmail_message(message_id='a2'), state)['results'][0]['status'], 'unchanged')
+            self.assertEqual(len(gh.issues), 1)
+            original = gh.api
+            def fail(path, method='GET', data=None):
+                if path == 'user':
+                    raise RuntimeError('auth unavailable')
+                return original(path, method, data)
+            gh.api = fail
+            with self.assertRaises(RuntimeError):
+                mail_receiver.receive(gh, gmail_message(message_id='a3'), state)
+            gh.api = original
+            self.assertEqual(mail_receiver.receive(gh, gmail_message(message_id='a3'), state)['status'], 'processed')
+            self.assertEqual(len(gh.issues), 1)
+
+    def test_poll_cursor_overlaps_and_advances_only_after_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'receiver.json'
+            now = int(mail_receiver.time.time())
+            config.write_text(bot.json.dumps({'gmail_link_id': 'test-link', 'gmail_profile_id': 'test-profile', 'start_epoch': now - 200000, 'last_scan_epoch': now - 1000}))
+            result = mail_receiver.poll_query(config)
+            self.assertIn(f'after:{now - 87400}', result['query'])
+            mail_receiver.checkpoint(config, result['scan_started_epoch'])
+            self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], result['scan_started_epoch'])
+            with self.assertRaises(ValueError):
+                mail_receiver.checkpoint(config, now + 600)
+
+    def test_unverified_sender_dev_ios_and_outside_projects_never_write(self):
+        message = gmail_message()
+        message['payload']['headers'][1]['value'] = 'mx.google.com; dkim=fail; dmarc=fail header.from=google.com'
+        with self.assertRaises(ValueError):
+            mail_receiver.normalize(message)
+        for replacement in ('android:com.yeobee.dev', 'ios:com.yeobee', 'android:com.other'):
+            message = gmail_message()
+            for part in message['payload']['parts']:
+                part['body']['content'] = part['body']['content'].replace('android:com.yeobee', replacement)
+            self.assertEqual(mail_receiver.normalize(message), [])
+        message = gmail_message()
+        for part in message['payload']['parts']:
+            part['body']['content'] = part['body']['content'].replace('/project/yeobeeios/', '/project/outside/')
+        self.assertEqual(mail_receiver.normalize(message), [])
 
 
 if __name__ == '__main__':

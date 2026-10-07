@@ -3,18 +3,20 @@ import argparse
 import base64
 import fcntl
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 TARGETS = {
     'yeobee': ('yeobeeios', '1:434182132125:android:5f42e801adcc2624631f74', 'YeoBee-official/YeoBee-Android', 'develop'),
     'bandalart': ('bandalart-e0288', '1:197590766195:android:0e0a78d2390e6849179006', 'Nexters/BandalArt-KMP', 'main'),
 }
+ANDROID_PACKAGES = {'yeobee': 'com.yeobee', 'bandalart': 'com.nexters.bandalart'}
 START, END = '<!-- personal-crashlytics:start -->', '<!-- personal-crashlytics:end -->'
 
 
@@ -75,9 +77,11 @@ def verify(gh, repo):
         raise ValueError('Repository write permission missing')
 
 
-def issue(gh, repo, marker, title, body):
+def issue(gh, repo, marker, title, body, existing_url=None):
+    link_pattern = re.escape(existing_url) + r'(?=$|[?\s<>\"\'\)\]])' if existing_url else None
     matches = [row for row in gh.pages(f'repos/{repo}/issues?state=all')
-               if 'pull_request' not in row and marker in (row.get('body') or '')]
+               if 'pull_request' not in row and (marker in (row.get('body') or '')
+               or (link_pattern and re.search(link_pattern, html.unescape(unquote(row.get('body') or '')))))]
     if len(matches) > 1:
         raise ValueError('Multiple matching issues; manual resolution required')
     if not matches:
@@ -87,7 +91,13 @@ def issue(gh, repo, marker, title, body):
     if row['state'] != 'open':
         return row, 'closed-held'
     old = row.get('body') or ''
+    if marker not in old and existing_url:
+        row = gh.api(f'repos/{repo}/issues/{row["number"]}', 'PATCH', {'body': old.rstrip() + '\n\n' + body})
+        return row, 'adopted-existing'
     if START in old and END in old and START in body:
+        previous_release = re.search(r'^Latest release: `([A-Za-z0-9._()+-]{1,80})`$', old, re.MULTILINE)
+        if previous_release and 'Latest release: `unknown`' in body:
+            body = body.replace('Latest release: `unknown`', previous_release.group())
         begin, end = old.index(START), old.index(END) + len(END)
         updated = old[:begin] + body + old[end:]
         if updated != old:
@@ -102,7 +112,10 @@ def sync(gh, alert, dry_run=False):
     verify(gh, repo)
     if dry_run:
         return {'repo': repo, 'status': 'validated-no-write'}
-    row, status = issue(gh, repo, marker, f'[Crashlytics] {name}: {alert["issue_id"][:12]}', body)
+    link = f'https://console.firebase.google.com/project/{target[0]}/crashlytics/app/android:{ANDROID_PACKAGES[name]}/issues/{alert["issue_id"]}'
+    body = body.replace(END, f'Crashlytics: {link}\n{END}')
+    title = f'[YB-00] Crashlytics: {alert["issue_id"][:12]}' if name == 'yeobee' else f'[Crashlytics] {name}: {alert["issue_id"][:12]}'
+    row, status = issue(gh, repo, marker, title, body, existing_url=link)
     return {'repo': repo, 'status': status, 'issue_url': row['html_url']}
 
 
