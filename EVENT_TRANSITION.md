@@ -1,23 +1,40 @@
-# Gmail 수신 이벤트 전환 준비
+# Gmail 메시지 이벤트와 시간별 복구 조회
 
-현재 `mail_receiver.py --gmail-file`은 Gmail `full` 메시지 한 건을 처리한다. 기존 SQLite 메시지 ID 기록과 GitHub 이슈 marker가 이벤트 재전달 및 폴백 재조회에서 중복 쓰기를 막는다. `--poll-query`와 `--checkpoint`는 마지막으로 **모든 페이지와 메시지를 성공적으로 처리한** 조회 시점만 기록한다. 조회 실패 시에는 체크포인트를 갱신하지 않는다. 폴백은 마지막 성공 시점보다 최대 24시간 앞부터 다시 읽으므로 하루 이상 중단되어도 마지막 성공 시점부터 복구한다.
+현재 수신기는 Gmail 메시지의 발신자 인증과 정확한 Firebase issue URL을 검사해 두 Android 앱만 이슈 처리한다. 원문, stack, 메일의 명령은 GitHub로 보내지 않는다. GitHub 이슈 marker와 Gmail ID 기록으로 재전달을 중복 처리하지 않는다.
 
-## 제안한 실행 흐름
+## 실행 경로와 입력 계약
 
-1. 개인 Gmail 연결의 메시지 수신 이벤트를 `firebase-noreply@google.com`으로 필터링한다. 이벤트는 알림 신호로만 사용한다. 같은 개인 연결에서 해당 Gmail 메시지의 `full` 객체를 다시 읽고 연결의 profile ID가 `var/receiver.json`의 `gmail_profile_id`와 일치하는지 확인한다. **현재 이 단계에서 로컬 수신기로 이어지는 지원 경로는 확인되지 않았다.**
-2. 메시지 객체를 권한 0600의 임시 JSON 파일로 전달하여 `python3 -B mail_receiver.py --gmail-file FILE`을 실행한다. 처리 후 성공과 실패 모두 파일을 삭제한다. 발신자 인증, 앱 제한, 원문 배제, 이슈 중복 방지는 기존 수신기가 담당한다. 오류가 나면 성공으로 처리하지 않는다.
-3. 별도 1시간 폴백은 `--poll-query`로 연결 ID, profile ID, 검색식, 시작 시각을 얻고, 동일 연결에서 검색 결과의 **모든 페이지**를 순회한다. 각 메시지의 `full` 객체를 2번과 같이 처리한다. 전체 성공 후에만 처음 받은 `scan_started_epoch`로 `--checkpoint`를 실행한다.
-4. 이벤트와 폴백은 동일한 `var/gmail.sqlite`, `var/receiver.json`, 단일 Mac lock을 사용한다. 둘 이상의 실행 호스트가 생기면 공유 상태 저장소와 큐 설계가 먼저 필요하다.
+Gmail 메시지 수신 이벤트는 부모 작업을 깨운다. 운영 호스트 접근이 확인되면 부모는 그 호스트의 개인 봇 작업에 **Gmail 메시지 ID만** 전달한다. 전달 형식은 `{"mode":"event","message_ids":["<Gmail hex ID>"]}`이다. 발신 주소만 트리거 필터로 쓰고 제목에는 Crashlytics 단어가 있을 것을 요구하지 않는다. 같은 발신자의 billing 등 다른 메일은 기존 `normalize()`의 앱·project·issue URL 검사에서 제외한다. 부모와 자식 작업 사이에 메일 본문, stack, 개인정보, GitHub 토큰을 메시지로 전달하지 않는다.
 
-현재 확인한 Gmail 이벤트 자동화 도구는 메시지 트리거를 제공하지만 로컬 실행 대상 지정 기능은 노출하지 않는다. 로컬 Codex 자동화 도구는 시간 기반 작업만 제공한다. 별도로 [OpenAI 일반 자동화 문서](https://learn.chatgpt.com/docs/automations?surface=app)는 이벤트 트리거를 웹/모바일에서 제공하고 데스크톱에서는 제공하지 않으며, 웹 작업은 로컬 폴더를 직접 사용할 수 없고, 한 자동화에 이벤트와 시간 일정을 함께 둘 수 없다고 설명한다. 이 두 도구의 내부 실행 경로가 동일한지는 실제 실행으로 검증하지 않았다. 현재 클라우드 GitHub 연결 `mps-jihun-lee`는 개인 레포 읽기 권한만 있고, 로컬 `easyhooon` 인증과 파일에 자동 접근하지 않는다. 따라서 이벤트 등록만으로 `mail_receiver.py`가 실행된다고 볼 근거가 없다. 지원되는 로컬 실행 연결 경로 또는 클라우드에서 동등한 검증/중복/체크포인트 로직과 개인 GitHub 쓰기 권한을 갖춘 별도 실행 경로가 필요하다. 어느 경로도 현재 검증되지 않았다. 새 Gmail watch/PubSub, 서비스 계정, 토큰 발급은 이 설계에 포함하지 않았다.
+운영 작업은 비공개 런타임 설정의 Gmail 연결 ID와 profile ID를 실제 개인 Gmail 연결과 비교한다. **Gmail 메시지를 읽기 전에** 받은 ID를 아래 명령으로 영속 pending에 기록한다. 조회 자체가 실패해도 시간별 폴백이 이 ID를 다시 읽을 수 있다. 이벤트 ID마다 같은 개인 Gmail 연결에서 `full` 메시지를 다시 읽는다. 이 객체를 권한 0600의 일회성 JSON 파일에 저장하고 수신 명령을 실행한 뒤 성공·실패 모두 파일을 삭제한다. 모든 명령에는 동일한 공유 상태 파일 경로를 명시한다.
 
-시간별 폴백은 이벤트 자동화와 별개의 **집 Mac 로컬 예약 작업**이어야 한다. 체크포인트는 그 Mac의 `var/receiver.json`, 메시지 ID 기록은 `var/gmail.sqlite`에 영속된다. 현재 집 Mac에는 두 파일이 없고 기존 폴링 작업의 설정도 확인되지 않았다. 이 상태에서 이벤트나 폴백을 활성화하면 처리 누락 여부를 판단할 수 없다. 집 Mac이 잠들거나 앱이 종료되면 로컬 작업은 실행되지 않으며, 다시 연결된 뒤 마지막 성공 체크포인트부터 겹쳐 읽어야 한다. [OpenAI 자동화 문서](https://learn.chatgpt.com/docs/automations?surface=app)는 로컬 파일 작업에 컴퓨터 전원과 앱 실행이 필요하다고 설명한다.
+```bash
+python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --enqueue-id GMAIL_MESSAGE_ID
+python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --gmail-file /private/tmp/gmail-message.json
+```
 
-## 활성화 점검
+시간별 폴백은 별도 예약 작업이 같은 운영 호스트의 개인 봇 작업에 `{"mode":"scan"}`을 전달한다. 운영 작업은 다음 명령으로 검색식, 연결·profile ID, 성공 조회의 시작 시각, 실패 또는 중단된 Gmail ID(`pending_ids`)를 얻는다.
 
-- `easyhooon` GitHub CLI 인증과 앱 저장소 쓰기 권한을 집 Mac에서 다시 확인한다. 필요한 최소 권한은 이슈 처리에 각 대상 저장소의 Issues write다. 이 저장소에 브랜치/PR을 게시하려면 Contents write와 Pull requests write가 추가로 필요하다.
-- 개인 Gmail 연결과 profile ID를 확인하고 집 Mac에 비공개 `var/receiver.json`, `var/gmail.sqlite`를 준비한다. 기존 Mac의 checkpoint/DB를 재사용할 수 없다면 이전 성공 시점을 확인하여 누락 구간을 먼저 읽는다.
-- 이벤트에서 로컬 수신기로 전달할 지원되는 실행 경로 또는 개인 `easyhooon` 쓰기 권한이 있는 승인된 실행 환경을 확인한다. 실제 이슈 생성은 별도 검증 전 활성화하지 않는다.
-- 합성 Gmail 객체로 이벤트 전달, 폴백 재조회, 실패 후 재시도를 확인한다. 그 후 이벤트 흐름과 1시간 폴백을 켜고, 실제 새 메일의 처리 및 체크포인트 기록을 확인한 다음 기존 15분 폴링을 중지한다.
+```bash
+python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --poll-query
+```
 
-이 문서는 전환 준비안이다. 자동화 일정, Gmail 설정, GitHub 권한, 실제 이슈/PR 운영 상태를 변경하지 않는다.
+작업은 먼저 `pending_ids`의 `full` 메시지를 다시 읽어 처리한다. 이어서 반환된 검색식의 **모든 페이지**를 읽고, 각 검색 결과 ID를 `--enqueue-id`로 기록한 뒤 해당 메시지의 `full` 객체를 처리한다. 같은 ID는 SQLite가 재처리를 막는다. 페이지 조회 또는 메시지 처리 하나라도 실패하거나 현재 처리 중이면 체크포인트를 진행하지 않는다. 전체 성공 후에만 처음 받은 `scan_started_epoch`로 갱신한다.
+
+```bash
+python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --checkpoint SCAN_STARTED_EPOCH
+```
+
+메시지 ID 선점과 기한 있는 lease는 공유 SQLite에 남는다. 정상 실패는 즉시 재시도 가능하고, 프로세스 중단 후에는 lease 만료 시 다시 선점한다. lease가 남아 있으면 체크포인트를 거부한다. 서로 다른 Gmail ID가 같은 크래시를 알리더라도 Mac의 외부 쓰기 lock이 이슈 조회·생성을 직렬화한다. 이슈 생성 POST 직전에 marker의 영속 intent를 기록한다. 응답 유실이나 중단 뒤에는 원격 이슈를 다시 조회한다. 일치하는 이슈가 보이지 않는 불확실한 POST는 **두 번째 생성 없이 보류**하고 사람이 원격 상태를 확인해야 한다. `last_scan_epoch`는 **전체 성공**을 뜻하며 실패 ID 목록과 별도다. 조회 검색식은 마지막 성공 시점보다 24시간 앞까지 겹친다. Mac이 오프라인이면 성공 체크포인트를 진행하지 않고, 복귀 후 마지막 성공 시점과 pending ID부터 복구한다.
+
+`STATE_DIR`은 운영 호스트에서 **checkout 밖의 한 영속 디렉터리**로 정한다. 기존 개인 봇이 이미 비공개 설정·DB를 사용 중이면 그 위치와 내용을 먼저 확인하고 이어 쓴다. 회사 봇의 설정·DB·인증은 공유하지 않는다. 이벤트와 시간별 폴백은 checkout이 달라도 동일한 `receiver.json`, `gmail.sqlite`, `gmail.write.lock`을 사용한다. CLI의 단일 Mac 작업 lock은 `tempfile.gettempdir()/personal-crashlytics-bot.lock`에 있다. 둘 이상의 Mac에 복제해 동시에 실행하려면 공유 큐와 상태 저장소가 먼저 필요하다. 상태 파일과 임시 메일은 Git에서 제외한다.
+
+## 활성화 전 확인
+
+- 사용자가 운영 호스트로 지정한 회사 Mac의 접근 권한을 확인한다. 현재 집 Mac은 개발·합성 검증 전용이다. 회사 Mac의 실제 checkout 및 개인 봇 상태 경로는 확인 전까지 추정하지 않는다.
+- 회사 Mac에서 기존 개인 15분 예약 작업의 존재·위치·소유 계정·실행 상태와 개인 봇의 마지막 성공 checkpoint를 확인한다. 집 Mac의 빈 상태 디렉터리로 운영 상태를 초기화하지 않는다.
+- 회사 Mac의 개인 `easyhooon` GitHub 인증과 대상 앱 저장소 Issues write, 개인 Gmail 연결의 profile ID를 확인한다. 회사 봇의 계정·인증·DB는 사용하지 않는다.
+- 부모→운영 호스트의 개인 봇 작업 전달과 Gmail `full` 조회, 합성 메일 처리, 재전달, 폴백, 실패 복구를 검증한다. 이 브랜치의 테스트는 합성 입력과 가짜 GitHub 클라이언트만 사용했다.
+- 기존 15분 작업과 새 흐름이 서로 다른 체크포인트 또는 Mac lock을 쓰면 동시에 이슈를 생성할 수 있다. 합성 검증 후 단일 writer와 체크포인트를 확정하고, 기존 작업과 새 쓰기 흐름이 겹치지 않게 전환한다. 기존 작업을 찾거나 새 흐름을 검증하기 전에는 중지하지 않는다.
+
+이 문서는 실행 계약이다. Gmail 이벤트, 예약 작업, GitHub 이슈 생성 운영을 활성화하지 않는다. 새 Gmail watch/PubSub, 서비스 계정, OAuth 설정은 필요하다고 확인되지 않았다.

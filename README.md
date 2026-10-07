@@ -124,7 +124,7 @@ python3 -B bot.py --probe bandalart
 
 ## Gmail 수신 운영 — 2026-10-07
 
-메시지 수신 이벤트와 1시간 폴백으로 전환하는 준비안은 [EVENT_TRANSITION.md](EVENT_TRANSITION.md)에 기록했다. 이 브랜치는 자동화 일정이나 운영 상태를 변경하지 않는다. 기존 15분 폴링은 새 흐름의 실제 처리를 검증한 뒤 중지한다.
+메시지 수신 이벤트와 1시간 폴백의 입력·실행 계약은 [EVENT_TRANSITION.md](EVENT_TRANSITION.md)에 기록했다. 수신기는 Gmail ID를 SQLite에서 원자적으로 선점하고 실패·중단 ID를 별도로 보존한다. 같은 이슈의 외부 쓰기를 한 Mac에서 직렬화하며, 생성 결과가 불확실하면 재조회하고 두 번째 생성을 보류한다. 폴백은 pending ID를 재시도하며 미처리 ID가 있으면 성공 체크포인트를 거부한다. 이 브랜치는 자동화 일정이나 운영 상태를 변경하지 않는다. 기존 15분 폴링은 새 흐름의 실제 처리를 검증한 뒤 중지한다.
 
 개인 Gmail에서 Firebase가 보낸 실제 여비/반다라트 Android 메일을 확인했다. 새 Gmail 인증이나 GitHub token, runner 설치, Firebase 설정 변경 없이 기존 연결을 사용한다. 수신 자동화 이름은 `개인 Crashlytics Gmail 수신`이고 Codex 앱에서 15분마다 이 로컬 대화를 실행한다. Mac이 켜져 있고 Codex 앱이 실행 중이며 기존 연결/인증을 사용할 수 있어야 한다. 앱의 자동화 카드에서 상태를 확인하거나 일시 중지한다. 예약 실행은 Codex 사용량을 소비한다.
 
