@@ -114,4 +114,4 @@ python3 -B bot.py --probe bandalart
 | 여비 | [#555](https://github.com/YeoBee-official/YeoBee-Android/issues/555) | [#556](https://github.com/YeoBee-official/YeoBee-Android/pull/556) | 작성자 easyhooon, base develop, README만 변경, 커밋 1개, 재실행 시 동일 PR 재사용 |
 | 반다라트 | [#421](https://github.com/Nexters/BandalArt-KMP/issues/421) | [#422](https://github.com/Nexters/BandalArt-KMP/pull/422) | 작성자 easyhooon, base main, README만 변경, 커밋 1개, 재실행 시 동일 PR 재사용 |
 
-여비 PR의 라벨/담당자 workflow는 성공했고 Android CI build는 최초 확인 시 실행 중이었다. 반다라트의 Markdown 변경에는 CI check가 생성되지 않았다. 이 결과를 앱 빌드/테스트 통과로 표시하지 않는다. 두 Draft PR과 합성 이슈는 검증 증거로 열어 두었다. 테스트 종료 후 PR을 병합 없이 닫고 합성 이슈와 테스트 branch를 정리한다.
+여비 PR의 Android CI build, 라벨, 담당자 workflow가 모두 성공했다. 반다라트의 Markdown 변경에는 CI check가 생성되지 않았다. 이 결과를 앱 빌드/테스트 통과로 표시하지 않는다. 두 Draft PR과 합성 이슈는 검증 증거로 열어 두었다. 테스트 종료 후 PR을 병합 없이 닫고 합성 이슈와 테스트 branch를 정리한다.
