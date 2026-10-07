@@ -1,4 +1,9 @@
 import copy
+import multiprocessing
+import sqlite3
+import subprocess
+import threading
+import time
 import unittest
 import tempfile
 from pathlib import Path
@@ -54,6 +59,44 @@ class FakeGitHub:
             self.prs.append(row)
             return copy.deepcopy(row)
         raise AssertionError((path, method))
+
+
+class FileGitHub:
+    def __init__(self, remote_file, message_id):
+        self.remote_file = Path(remote_file)
+        self.message_id = message_id
+
+    def pages(self, path):
+        return iter(bot.json.loads(self.remote_file.read_text()))
+
+    def api(self, path, method='GET', data=None):
+        if path == 'user':
+            return {'login': 'easyhooon'}
+        if method == 'GET' and path.count('/') == 2:
+            return {'full_name': path[6:], 'permissions': {'push': True}}
+        if path.endswith('/issues') and method == 'POST':
+            (self.remote_file.parent / ('post_' + self.message_id)).touch()
+            deadline = time.monotonic() + 8
+            while not (self.remote_file.parent / 'release').exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if not (self.remote_file.parent / 'release').exists():
+                raise RuntimeError('test process timeout')
+            issues = bot.json.loads(self.remote_file.read_text())
+            row = dict(data, number=len(issues) + 1, state='open', html_url='https://example.test/issue')
+            issues.append(row)
+            self.remote_file.write_text(bot.json.dumps(issues))
+            return row
+        raise AssertionError((path, method))
+
+
+def deliver_in_process(remote_file, state, message_id):
+    result_file = Path(remote_file).parent / ('result_' + message_id)
+    try:
+        result = mail_receiver.receive(FileGitHub(remote_file, message_id),
+                                       gmail_message(message_id=message_id), state)
+    except Exception as error:
+        result = {'error': str(error)}
+    result_file.write_text(bot.json.dumps(result))
 
 
 def alert(name='yeobee', release='1.0.0'):
@@ -178,6 +221,290 @@ def gmail_message(name='yeobee', message_id='a1'):
 
 
 class MailReceiverTest(unittest.TestCase):
+    def test_separate_processes_share_write_lock_and_sqlite_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / 'gmail.sqlite'
+            remote = root / 'remote.json'
+            remote.write_text('[]')
+            context = multiprocessing.get_context('spawn')
+            first = context.Process(target=deliver_in_process, args=(remote, state, 'a1'))
+            second = context.Process(target=deliver_in_process, args=(remote, state, 'a2'))
+            first.start()
+            deadline = time.monotonic() + 8
+            while not (root / 'post_a1').exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue((root / 'post_a1').exists())
+            second.start()
+            deadline = time.monotonic() + 8
+            while 'a2' not in mail_receiver.pending_ids(state) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertIn('a2', mail_receiver.pending_ids(state))
+            (root / 'release').touch()
+            first.join(8)
+            second.join(8)
+            self.assertEqual(first.exitcode, 0)
+            self.assertEqual(second.exitcode, 0)
+            outcomes = [bot.json.loads((root / ('result_' + message_id)).read_text())
+                        for message_id in ('a1', 'a2')]
+            self.assertEqual({row['results'][0]['status'] for row in outcomes}, {'created', 'unchanged'})
+            self.assertEqual(len(bot.json.loads(remote.read_text())), 1)
+            self.assertFalse((root / 'post_a2').exists())
+
+    def test_distinct_gmail_ids_for_same_issue_serialize_external_create(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            gh = FakeGitHub()
+            original = gh.api
+            creating, release = threading.Event(), threading.Event()
+            outcome = []
+
+            def blocked_create(path, method='GET', data=None):
+                if path.endswith('/issues') and method == 'POST':
+                    creating.set()
+                    if not release.wait(3):
+                        raise RuntimeError('test worker timeout')
+                return original(path, method, data)
+
+            gh.api = blocked_create
+
+            def deliver(message_id):
+                outcome.append(mail_receiver.receive(gh, gmail_message(message_id=message_id), state))
+
+            first = threading.Thread(target=deliver, args=('a1',))
+            second = threading.Thread(target=deliver, args=('a2',))
+            first.start()
+            self.assertTrue(creating.wait(3))
+            second.start()
+            try:
+                self.assertTrue(second.is_alive())
+            finally:
+                release.set()
+                first.join(3)
+                second.join(3)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual({result['results'][0]['status'] for result in outcome}, {'created', 'unchanged'})
+            self.assertEqual(len(gh.issues), 1)
+            self.assertEqual(sum(path.endswith('/issues') and method == 'POST'
+                                 for path, method, _ in gh.writes), 1)
+
+    def test_expired_message_lease_during_remote_create_keeps_one_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            gh = FakeGitHub()
+            original_api = gh.api
+            creating, release = threading.Event(), threading.Event()
+            outcomes = []
+            original_lease = mail_receiver.LEASE_SECONDS
+            mail_receiver.LEASE_SECONDS = 0
+
+            def blocked_create(path, method='GET', data=None):
+                if path.endswith('/issues') and method == 'POST':
+                    creating.set()
+                    if not release.wait(3):
+                        raise RuntimeError('test worker timeout')
+                return original_api(path, method, data)
+
+            gh.api = blocked_create
+
+            def deliver():
+                try:
+                    outcomes.append(mail_receiver.receive(gh, gmail_message(), state)['status'])
+                except RuntimeError as error:
+                    outcomes.append(str(error))
+
+            first = threading.Thread(target=deliver)
+            second = threading.Thread(target=deliver)
+            try:
+                first.start()
+                self.assertTrue(creating.wait(3))
+                with sqlite3.connect(state) as db:
+                    first_owner = db.execute('SELECT lease_owner FROM pending WHERE id=?', ('a1',)).fetchone()[0]
+                second.start()
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    with sqlite3.connect(state) as db:
+                        owner = db.execute('SELECT lease_owner FROM pending WHERE id=?', ('a1',)).fetchone()[0]
+                    if owner != first_owner:
+                        break
+                    time.sleep(0.02)
+                self.assertNotEqual(owner, first_owner)
+            finally:
+                release.set()
+                first.join(3)
+                second.join(3)
+                mail_receiver.LEASE_SECONDS = original_lease
+            self.assertEqual(set(outcomes), {'gmail-message-lease-lost', 'processed'})
+            self.assertEqual(len(gh.issues), 1)
+            self.assertEqual(mail_receiver.pending_ids(state), [])
+
+    def test_lost_create_response_reconciles_remote_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            gh = FakeGitHub()
+            original = gh.api
+
+            def lost_response(path, method='GET', data=None):
+                result = original(path, method, data)
+                if path.endswith('/issues') and method == 'POST':
+                    raise RuntimeError('response lost after remote create')
+                return result
+
+            gh.api = lost_response
+            result = mail_receiver.receive(gh, gmail_message(), state)
+            self.assertEqual(result['results'][0]['status'], 'reconciled-after-create-error')
+            self.assertEqual(len(gh.issues), 1)
+            with sqlite3.connect(state) as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM issue_intents').fetchone()[0], 0)
+
+    def test_create_timeout_after_remote_commit_reconciles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gh = FakeGitHub()
+            original = gh.api
+
+            def timeout_after_create(path, method='GET', data=None):
+                result = original(path, method, data)
+                if path.endswith('/issues') and method == 'POST':
+                    raise subprocess.TimeoutExpired(cmd=['gh', 'api'], timeout=60)
+                return result
+
+            gh.api = timeout_after_create
+            result = mail_receiver.receive(gh, gmail_message(), Path(tmp) / 'gmail.sqlite')
+            self.assertEqual(result['results'][0]['status'], 'reconciled-after-create-error')
+            self.assertEqual(len(gh.issues), 1)
+
+    def test_uncertain_create_without_remote_match_blocks_second_post(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            gh = FakeGitHub()
+            original = gh.api
+
+            def timeout_before_create(path, method='GET', data=None):
+                if path.endswith('/issues') and method == 'POST':
+                    raise RuntimeError('unknown outcome')
+                return original(path, method, data)
+
+            gh.api = timeout_before_create
+            with self.assertRaisesRegex(RuntimeError, 'outcome uncertain'):
+                mail_receiver.receive(gh, gmail_message(), state)
+            with sqlite3.connect(state) as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM issue_intents').fetchone()[0], 1)
+            gh.api = original
+            with self.assertRaisesRegex(RuntimeError, 'outcome uncertain'):
+                mail_receiver.receive(gh, gmail_message(), state)
+            self.assertFalse(gh.issues)
+            self.assertFalse(any(method == 'POST' for _, method, _ in gh.writes))
+
+            # A delayed remote create becomes visible; retry reconciles without another POST.
+            bot.sync(gh, alert())
+            count = len(gh.writes)
+            self.assertEqual(mail_receiver.receive(gh, gmail_message(), state)['results'][0]['status'], 'unchanged')
+            self.assertEqual(len(gh.writes), count)
+            self.assertEqual(len(gh.issues), 1)
+
+    def test_same_gmail_id_is_claimed_once_during_concurrent_delivery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            gh = FakeGitHub()
+            original = gh.api
+            entered, release = threading.Event(), threading.Event()
+            outcome = []
+
+            def blocked(path, method='GET', data=None):
+                if path == 'user':
+                    entered.set()
+                    if not release.wait(3):
+                        raise RuntimeError('test worker timeout')
+                return original(path, method, data)
+
+            gh.api = blocked
+
+            def first_delivery():
+                outcome.append(mail_receiver.receive(gh, gmail_message(), state))
+
+            worker = threading.Thread(target=first_delivery)
+            worker.start()
+            self.assertTrue(entered.wait(3))
+            try:
+                self.assertEqual(mail_receiver.enqueue('a1', state)['status'], 'already-queued')
+                with self.assertRaisesRegex(RuntimeError, 'in-progress'):
+                    mail_receiver.receive(gh, gmail_message(), state)
+            finally:
+                release.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(outcome[0]['status'], 'processed')
+            self.assertEqual(mail_receiver.receive(gh, gmail_message(), state)['status'], 'already-processed')
+            self.assertEqual(len(gh.issues), 1)
+
+    def test_event_id_is_durable_before_gmail_fetch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            config = Path(tmp) / 'receiver.json'
+            now = int(mail_receiver.time.time())
+            config.write_text(bot.json.dumps({
+                'gmail_link_id': 'personal-link', 'gmail_profile_id': 'personal-profile',
+                'start_epoch': now - 3600, 'last_scan_epoch': now - 60,
+            }))
+            self.assertEqual(mail_receiver.enqueue('a5', state)['status'], 'queued')
+            self.assertEqual(mail_receiver.enqueue('a5', state)['status'], 'already-queued')
+            with self.assertRaises(ValueError):
+                mail_receiver.enqueue('not-a-gmail-id', state)
+            plan = mail_receiver.poll_query(config, state)
+            self.assertEqual(plan['pending_ids'], ['a5'])
+            with self.assertRaisesRegex(RuntimeError, 'pending Gmail'):
+                mail_receiver.checkpoint(config, plan['scan_started_epoch'], state)
+            gh = FakeGitHub()
+            self.assertEqual(mail_receiver.receive(gh, gmail_message(message_id='a5'), state)['status'], 'processed')
+            self.assertEqual(mail_receiver.enqueue('a5', state)['status'], 'already-processed')
+            mail_receiver.checkpoint(config, plan['scan_started_epoch'], state)
+
+    def test_failed_event_stays_pending_until_retried_before_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            config = Path(tmp) / 'receiver.json'
+            now = int(mail_receiver.time.time())
+            config.write_text(bot.json.dumps({
+                'gmail_link_id': 'personal-link', 'gmail_profile_id': 'personal-profile',
+                'start_epoch': now - 100, 'last_scan_epoch': now - 50,
+            }))
+            gh = FakeGitHub()
+            original = gh.api
+
+            def fail(path, method='GET', data=None):
+                if path == 'user':
+                    raise RuntimeError('temporary GitHub failure')
+                return original(path, method, data)
+
+            gh.api = fail
+            with self.assertRaises(RuntimeError):
+                mail_receiver.receive(gh, gmail_message(message_id='a3'), state)
+            plan = mail_receiver.poll_query(config, state)
+            self.assertEqual(plan['pending_ids'], ['a3'])
+            with self.assertRaisesRegex(RuntimeError, 'pending Gmail'):
+                mail_receiver.checkpoint(config, plan['scan_started_epoch'], state)
+            self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], now - 50)
+            gh.api = original
+            self.assertEqual(mail_receiver.receive(gh, gmail_message(message_id='a3'), state)['status'], 'processed')
+            self.assertEqual(mail_receiver.pending_ids(state), [])
+            mail_receiver.checkpoint(config, plan['scan_started_epoch'], state)
+            self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], plan['scan_started_epoch'])
+
+    def test_expired_lease_reconciles_remote_issue_after_local_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            gh = FakeGitHub()
+            message = gmail_message(message_id='a4')
+            bot.sync(gh, mail_receiver.normalize(message)[0])
+            with sqlite3.connect(state) as db:
+                db.execute('CREATE TABLE processed (id TEXT PRIMARY KEY, received_at TEXT DEFAULT CURRENT_TIMESTAMP)')
+                db.execute('CREATE TABLE pending (id TEXT PRIMARY KEY, lease_owner TEXT, lease_until INTEGER NOT NULL)')
+                db.execute('INSERT INTO pending VALUES (?, ?, ?)', ('a4', 'crashed-worker', 0))
+            self.assertEqual(mail_receiver.receive(gh, message, state)['results'][0]['status'], 'unchanged')
+            self.assertEqual(len(gh.issues), 1)
+            self.assertEqual(mail_receiver.pending_ids(state), [])
+
     def test_real_mail_shape_normalizes_both_apps_without_raw_content(self):
         for name in bot.TARGETS:
             with self.subTest(app=name):
@@ -192,6 +519,16 @@ class MailReceiverTest(unittest.TestCase):
                     self.assertEqual(result['alerts'], 1)
                     self.assertFalse(gh.writes)
                     self.assertFalse((Path(tmp) / 'state.sqlite').exists())
+
+    def test_sender_only_trigger_ignores_non_crash_firebase_mail(self):
+        message = gmail_message(message_id='b1')
+        for part in message['payload']['parts']:
+            part['body']['content'] = 'Firebase billing notice https://console.firebase.google.com/project/yeobeeios/usage'
+        with tempfile.TemporaryDirectory() as tmp:
+            gh = FakeGitHub()
+            result = mail_receiver.receive(gh, message, Path(tmp) / 'gmail.sqlite')
+            self.assertEqual(result['status'], 'ignored-non-target')
+            self.assertFalse(gh.writes)
 
     def test_mail_replay_checkpoint_and_retry_after_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -227,6 +564,65 @@ class MailReceiverTest(unittest.TestCase):
             self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], result['scan_started_epoch'])
             with self.assertRaises(ValueError):
                 mail_receiver.checkpoint(config, now + 600)
+
+    def test_event_then_hourly_fallback_reuses_message_id_and_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            config = Path(tmp) / 'receiver.json'
+            now = int(mail_receiver.time.time())
+            config.write_text(bot.json.dumps({
+                'gmail_link_id': 'personal-link', 'gmail_profile_id': 'personal-profile',
+                'start_epoch': now - 3600, 'last_scan_epoch': now - 1800,
+            }))
+            gh = FakeGitHub()
+            message = gmail_message(message_id='e1')
+            self.assertEqual(mail_receiver.receive(gh, message, state)['status'], 'processed')
+            writes = len(gh.writes)
+
+            scan = mail_receiver.poll_query(config)
+            self.assertEqual(scan['link_id'], 'personal-link')
+            self.assertEqual(scan['profile_id'], 'personal-profile')
+            self.assertIn(f'after:{now - 3600}', scan['query'])
+            self.assertEqual(mail_receiver.receive(gh, message, state)['status'], 'already-processed')
+            self.assertEqual(len(gh.writes), writes)
+            self.assertNotIn('untrusted instructions', repr(gh.writes))
+            self.assertNotIn(b'untrusted instructions', state.read_bytes())
+            mail_receiver.checkpoint(config, scan['scan_started_epoch'])
+            self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], scan['scan_started_epoch'])
+            self.assertEqual(len(gh.issues), 1)
+
+    def test_failed_fallback_does_not_advance_checkpoint_and_replays_safely(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'gmail.sqlite'
+            config = Path(tmp) / 'receiver.json'
+            now = int(mail_receiver.time.time())
+            previous = now - 3 * 86400
+            config.write_text(bot.json.dumps({
+                'gmail_link_id': 'personal-link', 'gmail_profile_id': 'personal-profile',
+                'start_epoch': now - 7 * 86400, 'last_scan_epoch': previous,
+            }))
+            scan = mail_receiver.poll_query(config)
+            self.assertIn(f'after:{previous - 86400}', scan['query'])
+            gh = FakeGitHub()
+            first = gmail_message(message_id='a1')
+            second = gmail_message(message_id='a2')
+            mail_receiver.receive(gh, first, state)
+            original = gh.api
+
+            def fail(path, method='GET', data=None):
+                if path == 'user':
+                    raise RuntimeError('temporary GitHub failure')
+                return original(path, method, data)
+
+            gh.api = fail
+            with self.assertRaises(RuntimeError):
+                mail_receiver.receive(gh, second, state)
+            self.assertEqual(bot.json.loads(config.read_text())['last_scan_epoch'], previous)
+            gh.api = original
+            self.assertEqual(mail_receiver.receive(gh, first, state)['status'], 'already-processed')
+            self.assertEqual(mail_receiver.receive(gh, second, state)['results'][0]['status'], 'unchanged')
+            mail_receiver.checkpoint(config, scan['scan_started_epoch'])
+            self.assertEqual(len(gh.issues), 1)
 
     def test_unverified_sender_dev_ios_and_outside_projects_never_write(self):
         message = gmail_message()

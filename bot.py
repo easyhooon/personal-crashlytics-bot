@@ -77,15 +77,30 @@ def verify(gh, repo):
         raise ValueError('Repository write permission missing')
 
 
-def issue(gh, repo, marker, title, body, existing_url=None):
+def issue(gh, repo, marker, title, body, existing_url=None, create_if_missing=True, before_create=None):
     link_pattern = re.escape(existing_url) + r'(?=$|[?\s<>\"\'\)\]])' if existing_url else None
-    matches = [row for row in gh.pages(f'repos/{repo}/issues?state=all')
-               if 'pull_request' not in row and (marker in (row.get('body') or '')
-               or (link_pattern and re.search(link_pattern, html.unescape(unquote(row.get('body') or '')))))]
+    def find_matches():
+        return [row for row in gh.pages(f'repos/{repo}/issues?state=all')
+                if 'pull_request' not in row and (marker in (row.get('body') or '')
+                or (link_pattern and re.search(link_pattern, html.unescape(unquote(row.get('body') or '')))))]
+
+    matches = find_matches()
     if len(matches) > 1:
         raise ValueError('Multiple matching issues; manual resolution required')
     if not matches:
-        row = gh.api(f'repos/{repo}/issues', 'POST', {'title': title, 'body': body})
+        if not create_if_missing:
+            raise RuntimeError('Issue create outcome uncertain; manual reconciliation required')
+        if before_create:
+            before_create()
+        try:
+            row = gh.api(f'repos/{repo}/issues', 'POST', {'title': title, 'body': body})
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            matches = find_matches()
+            if len(matches) == 1:
+                return matches[0], 'reconciled-after-create-error'
+            if len(matches) > 1:
+                raise ValueError('Multiple matching issues; manual resolution required') from error
+            raise RuntimeError('Issue create outcome uncertain; manual reconciliation required') from error
         return row, 'created'
     row = matches[0]
     if row['state'] != 'open':
@@ -106,7 +121,7 @@ def issue(gh, repo, marker, title, body, existing_url=None):
     return row, 'unchanged'
 
 
-def sync(gh, alert, dry_run=False):
+def sync(gh, alert, dry_run=False, create_if_missing=True, before_create=None):
     name, target, marker, body = validate(alert)
     repo = target[2]
     verify(gh, repo)
@@ -115,7 +130,8 @@ def sync(gh, alert, dry_run=False):
     link = f'https://console.firebase.google.com/project/{target[0]}/crashlytics/app/android:{ANDROID_PACKAGES[name]}/issues/{alert["issue_id"]}'
     body = body.replace(END, f'Crashlytics: {link}\n{END}')
     title = f'[YB-00] Crashlytics: {alert["issue_id"][:12]}' if name == 'yeobee' else f'[Crashlytics] {name}: {alert["issue_id"][:12]}'
-    row, status = issue(gh, repo, marker, title, body, existing_url=link)
+    row, status = issue(gh, repo, marker, title, body, existing_url=link,
+                        create_if_missing=create_if_missing, before_create=before_create)
     return {'repo': repo, 'status': status, 'issue_url': row['html_url']}
 
 
