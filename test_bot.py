@@ -627,8 +627,7 @@ class MailReceiverTest(unittest.TestCase):
     def test_unverified_sender_dev_ios_and_outside_projects_never_write(self):
         message = gmail_message()
         message['payload']['headers'][1]['value'] = 'mx.google.com; dkim=fail; dmarc=fail header.from=google.com'
-        with self.assertRaises(ValueError):
-            mail_receiver.normalize(message)
+        self.assertEqual(mail_receiver.normalize(message), [])
         for replacement in ('android:com.yeobee.dev', 'ios:com.yeobee', 'android:com.other'):
             message = gmail_message()
             for part in message['payload']['parts']:

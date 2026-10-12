@@ -50,17 +50,23 @@ def enqueue(message_id, state_file):
         return {'status': 'queued' if row.rowcount else 'already-queued'}
 
 
-def normalize(message):
+def firebase_sender(message):
     payload = message['payload']
     headers = payload.get('headers', [])
     sender = next((h['value'] for h in headers if h['name'].lower() == 'from'), '')
-    if parseaddr(sender)[1].lower() != 'firebase-noreply@google.com':
-        raise ValueError('sender-not-firebase')
+    return parseaddr(sender)[1].lower() == 'firebase-noreply@google.com'
+
+
+def normalize(message):
+    payload = message['payload']
+    headers = payload.get('headers', [])
+    if not firebase_sender(message):
+        return []
     auth = next((h['value'] for h in headers if h['name'].lower() == 'authentication-results'
                  and h['value'].lstrip().startswith('mx.google.com;')), '')
     if not (re.search(r'\bdkim=pass\b[^;]*\bheader\.i=@google\.com(?:\s|;|$)', auth)
             and re.search(r'\bdmarc=pass\b[^;]*\bheader\.from=google\.com(?:\s|;|$)', auth)):
-        raise ValueError('gmail-sender-authentication-failed')
+        return []
 
     def text_parts(part):
         if part.get('mime_type', part.get('mimeType')) in ('text/plain', 'text/html'):
@@ -93,9 +99,13 @@ def normalize(message):
     return list(found.values())
 
 
-def receive(gh, message, state_file, dry_run=False):
+def receive(gh, message, state_file, dry_run=False, expected_id=None):
     message_id = message.get('id', '')
     valid_message_id(message_id)
+    if expected_id is not None:
+        valid_message_id(expected_id)
+        if message_id != expected_id:
+            raise ValueError('fetched-gmail-message-id-mismatch')
     alerts = normalize(message)
     if dry_run:
         return {'status': 'dry-run', 'alerts': len(alerts), 'results': [bot.sync(gh, alert, True) for alert in alerts]}
@@ -205,9 +215,12 @@ def main():
     parser.add_argument('--runtime-config', type=Path, default=Path(__file__).parent / 'var' / 'receiver.json')
     parser.add_argument('--state', type=Path, default=Path(__file__).parent / 'var' / 'gmail.sqlite')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--expected-id')
     args = parser.parse_args()
     if args.dry_run and not args.gmail_file:
         parser.error('--dry-run applies to Gmail messages only')
+    if args.expected_id and not args.gmail_file:
+        parser.error('--expected-id applies to Gmail messages only')
     # ponytail: same single-Mac lock as the issue/PR CLI; use a shared queue before adding another host.
     with open(Path(tempfile.gettempdir()) / 'personal-crashlytics-bot.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -219,7 +232,8 @@ def main():
             checkpoint(args.runtime_config, args.checkpoint, args.state)
             result = {'status': 'scan-checkpointed'}
         else:
-            result = receive(bot.GitHub(), json.loads(args.gmail_file.read_text()), args.state, args.dry_run)
+            result = receive(bot.GitHub(), json.loads(args.gmail_file.read_text()), args.state,
+                             args.dry_run, args.expected_id)
         print(json.dumps(result, ensure_ascii=False))
 
 
