@@ -14,7 +14,7 @@ historyId가 만료되어 `history.list`가 404를 반환하면 먼저 현재 ma
 
 ## 로컬 실행 계약
 
-`push.example.json`을 참고해 개인 전용 비공개 설정을 만든다. `gmail_email`은 읽을 개인 mailbox, `topic_name`은 Gmail watch 게시 대상, `subscription_name`은 이 프로세스가 읽을 Pub/Sub 구독이다. 기존 `receiver.json`과 `gmail.sqlite`는 현재 개인 봇의 **동일한 영속 경로**를 사용해야 한다. Gmail OAuth는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user` 항목에서 읽는다. Pub/Sub 수신은 별도의 `personal-crashlytics-bot-pubsub-user` 항목과 `https://www.googleapis.com/auth/pubsub` 단일 범위를 요구한다. 후자 발급은 아직 미완료다. 새 Keychain 로더의 실제 읽기도 현재 제한된 실행 환경에서 Security 오류 `-50`으로 실패해 운영 호스트 검증이 남았다. 자격증명은 Git에 넣지 않는다.
+`push.example.json`을 참고해 개인 전용 비공개 설정을 만든다. `gmail_email`은 읽을 개인 mailbox, `topic_name`은 Gmail watch 게시 대상, `subscription_name`은 이 프로세스가 읽을 Pub/Sub 구독이다. 기존 `receiver.json`과 `gmail.sqlite`는 현재 개인 봇의 **동일한 영속 경로**를 사용해야 한다. Gmail OAuth는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user` 항목에서 읽는다. Pub/Sub 수신은 별도의 `personal-crashlytics-bot-pubsub-user` 항목과 `https://www.googleapis.com/auth/pubsub` 단일 범위를 요구한다. 후자 발급은 아직 미완료다. 새 Keychain 로더의 실제 읽기도 현재 제한된 실행 환경에서 기본 검색 목록 오류 `-50`, 명시적 기본 Keychain 조회의 항목 없음 `-25300`으로 실패해 운영 호스트 검증이 남았다. 자격증명은 Git에 넣지 않는다.
 
 ```bash
 python3 -m pip install -r requirements-push.txt

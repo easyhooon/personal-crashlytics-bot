@@ -14,7 +14,17 @@ let query: [String: Any] = [
     kSecMatchLimit as String: kSecMatchLimitOne
 ]
 var value: CFTypeRef?
-let status = SecItemCopyMatching(query as CFDictionary, &value)
+var status = SecItemCopyMatching(query as CFDictionary, &value)
+if status == errSecParam {
+    // Some hosts cannot resolve the implicit search list. Retry only the
+    // current user's default Keychain; never search another account or file.
+    var keychain: SecKeychain?
+    if SecKeychainCopyDefault(&keychain) == errSecSuccess, let keychain {
+        var explicit = query
+        explicit[kSecMatchSearchList as String] = [keychain]
+        status = SecItemCopyMatching(explicit as CFDictionary, &value)
+    }
+}
 guard status == errSecSuccess, let data = value as? Data else {
     fputs("Keychain read status: \(status)\n", stderr)
     exit(1)

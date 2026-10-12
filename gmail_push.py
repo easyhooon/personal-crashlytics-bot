@@ -213,6 +213,13 @@ def on_pubsub_message(receiver, message):
 
 
 def keychain_oauth_info(service, scope):
+    if (service, scope) not in {
+        ('personal-crashlytics-bot-oauth-user',
+         'https://www.googleapis.com/auth/gmail.readonly'),
+        ('personal-crashlytics-bot-pubsub-user',
+         'https://www.googleapis.com/auth/pubsub'),
+    }:
+        raise ValueError('unsupported-personal-oauth-keychain-entry')
     result = subprocess.run(
         ['/usr/bin/swift', '-module-cache-path',
          str(Path(tempfile.gettempdir()) / 'personal-crashlytics-swift-cache'),

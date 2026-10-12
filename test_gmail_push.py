@@ -94,6 +94,12 @@ class PushTest(unittest.TestCase):
                         'https://www.googleapis.com/auth/gmail.readonly')
 
     def test_keychain_oauth_info_fails_closed(self):
+        with patch.object(gmail_push.subprocess, 'run') as run:
+            with self.assertRaises(ValueError):
+                gmail_push.keychain_oauth_info(
+                    'personal-crashlytics-bot-pubsub-user',
+                    'https://www.googleapis.com/auth/gmail.readonly')
+            run.assert_not_called()
         for result in (MagicMock(returncode=1, stdout=''),
                        MagicMock(returncode=0, stdout='not-json')):
             with patch.object(gmail_push.subprocess, 'run', return_value=result):
