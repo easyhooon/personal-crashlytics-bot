@@ -1,4 +1,6 @@
-# Gmail 메시지 이벤트와 시간별 복구 조회
+# Gmail 이벤트 수신 전환과 시간별 복구 조회
+
+2026-10-12 현재 `main`에서 운영 중인 것은 Codex의 **1시간 Gmail 복구 조회**다. 아래 메시지 ID 전달 계약은 `main`에 구현된 수신기와 연결할 수 있지만, 이벤트 트리거의 운영 연결은 검증되지 않았다. 직접 Gmail `watch` → Pub/Sub → `history.list` 구현은 [`feat/event-receiver-completion`](https://github.com/easyhooon/personal-crashlytics-bot/tree/feat/event-receiver-completion)에 있으며 아직 `main`에 병합·배포되지 않았다. 개인 Cloud 프로젝트에서는 Gmail API와 Pub/Sub API만 사용 설정됐다. OAuth, topic, subscription, watch, 상주 수신 서비스와 갱신 예약은 미완료다. 기존 시간별 조회는 실제 이벤트 수신이 검증될 때까지 유지한다.
 
 현재 수신기는 Gmail 메시지의 발신자 인증과 정확한 Firebase issue URL을 검사해 두 Android 앱만 이슈 처리한다. 원문, stack, 메일의 명령은 GitHub로 보내지 않는다. GitHub 이슈 marker와 Gmail ID 기록으로 재전달을 중복 처리하지 않는다.
 
@@ -31,10 +33,10 @@ python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STA
 
 ## 활성화 전 확인
 
-- 사용자가 운영 호스트로 지정한 회사 Mac의 접근 권한을 확인한다. 현재 집 Mac은 개발·합성 검증 전용이다. 회사 Mac의 실제 checkout 및 개인 봇 상태 경로는 확인 전까지 추정하지 않는다.
-- 회사 Mac에서 기존 개인 15분 예약 작업의 존재·위치·소유 계정·실행 상태와 개인 봇의 마지막 성공 checkpoint를 확인한다. 집 Mac의 빈 상태 디렉터리로 운영 상태를 초기화하지 않는다.
+- 회사 Mac에서 개인 봇의 실제 checkout과 비공개 상태 경로를 확인한다. 다른 기기의 빈 상태를 운영 checkpoint로 대체하지 않는다.
+- 회사 Mac에서 기존 개인 1시간 예약 작업의 실행 상태와 개인 봇의 마지막 성공 checkpoint를 확인한다. 빈 상태 디렉터리로 운영 상태를 초기화하지 않는다.
 - 회사 Mac의 개인 `easyhooon` GitHub 인증과 대상 앱 저장소 Issues write, 개인 Gmail 연결의 profile ID를 확인한다. 회사 봇의 계정·인증·DB는 사용하지 않는다.
-- 부모→운영 호스트의 개인 봇 작업 전달과 Gmail `full` 조회, 합성 메일 처리, 재전달, 폴백, 실패 복구를 검증한다. 이 브랜치의 테스트는 합성 입력과 가짜 GitHub 클라이언트만 사용했다.
-- 기존 15분 작업과 새 흐름이 서로 다른 체크포인트 또는 Mac lock을 쓰면 동시에 이슈를 생성할 수 있다. 합성 검증 후 단일 writer와 체크포인트를 확정하고, 기존 작업과 새 쓰기 흐름이 겹치지 않게 전환한다. 기존 작업을 찾거나 새 흐름을 검증하기 전에는 중지하지 않는다.
+- 부모→운영 호스트의 개인 봇 작업 전달과 Gmail `full` 조회, 합성 메일 처리, 재전달, 폴백, 실패 복구를 검증한다. `main`의 테스트는 합성 입력과 가짜 GitHub 클라이언트만 사용했다.
+- 기존 1시간 작업과 새 흐름이 서로 다른 체크포인트 또는 Mac lock을 쓰면 동시에 이슈를 생성할 수 있다. 합성 검증 후 단일 writer와 체크포인트를 확정하고, 기존 작업과 새 쓰기 흐름이 겹치지 않게 전환한다. 새 흐름을 검증하기 전에는 기존 작업을 중지하지 않는다.
 
-이 문서는 실행 계약이다. Gmail 이벤트, 예약 작업, GitHub 이슈 생성 운영을 활성화하지 않는다. 새 Gmail watch/PubSub, 서비스 계정, OAuth 설정은 필요하다고 확인되지 않았다.
+이 문서는 `main`의 기존 수신기 계약과 전환 계획이다. 문서 수정만으로 Gmail 이벤트나 예약 작업은 활성화되지 않는다. 직접 API 방식의 설정·검증 절차는 기능 브랜치에서 진행 중이다.
