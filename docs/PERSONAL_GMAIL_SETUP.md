@@ -2,7 +2,17 @@
 
 이 가이드는 개인 Gmail `watch` → Cloud Pub/Sub → StreamingPull → `history.list` 경로를 재현하는 순서다. `PERSONAL_*`은 각자 확인한 값으로 바꾼다. 실제 계정, 프로젝트, 앱 ID, 토큰, 비공개 경로를 저장소에 기록하지 않는다. 회사 계정·프로젝트·인증·상태 DB와 혼합하지 않는다.
 
-**2026-10-12 확인 범위:** 개인 Cloud 콘솔에서 Gmail API와 Pub/Sub API, 외부 Testing OAuth 앱의 테스트 사용자·Desktop 클라이언트·`gmail.readonly` 범위, Pub/Sub 주제·pull 구독(7일 보관)·Gmail 게시자 권한을 확인했다. 개인 Gmail 읽기 전용 OAuth 사용자 토큰을 Keychain에 저장하고 `getProfile` 호출을 확인했다. Pub/Sub 단일 범위 OAuth도 사용자의 Terminal에서 Keychain에 저장했으며, 별도 프로세스의 구독 조회는 아직 미검증이다. Gmail watch, 상주 수신기, 실제 알림 수신·ACK/NACK, 갱신 예약도 **미검증**이다. 프로젝트에 결제 계정이 연결되지 않았으며 결제가 요구되면 연결 전에 별도로 판단한다. 기존 1시간 복구 조회는 새 경로 검증 전까지 유지한다.
+**2026-10-12 확인 범위:** 개인 Cloud 콘솔에서 Gmail API와 Pub/Sub API, 외부 Testing OAuth 앱의 테스트 사용자·Desktop 클라이언트·`gmail.readonly` 범위, Pub/Sub 주제·pull 구독(7일 보관)·Gmail 게시자 권한을 확인했다. Gmail·Pub/Sub 각각의 단일 범위 OAuth를 Keychain에 저장하고 별도 프로세스의 Gmail `getProfile`·Pub/Sub 구독 조회를 확인했다. 운영 Mac의 LaunchAgent 서비스가 실행 중이며 Gmail watch를 등록하고 초기 Pub/Sub 알림의 history 조회·cursor 저장·ACK를 확인했다. 실제 신규 Firebase 알림 처리와 watch 갱신 예약은 **미검증**이다. 프로젝트에 결제 계정이 연결되지 않았으며 결제가 요구되면 연결 전에 별도로 판단한다. 기존 1시간 복구 조회는 새 경로 검증 전까지 유지한다.
+
+## Gmail watch가 동작하는 방식
+
+1. 이 Mac의 `gmail_push.py --renew-watch`가 개인 Gmail API `users.watch`를 호출해 프로젝트의 Pub/Sub topic을 등록한다. 이후 **Gmail 서버가** mailbox 변경을 그 topic에 게시한다. 등록 직후에도 초기 알림 한 건을 보낸다. [Gmail push 가이드](https://developers.google.com/workspace/gmail/api/guides/push)
+2. Pub/Sub 알림에는 메일 본문이나 Gmail 메시지 ID가 아닌 `emailAddress`와 mailbox `historyId`가 들어 있다. 공식 예시는 `historyId`를 문자열로 표시하지만 이번 초기 알림은 JSON 정수였고, 수신기는 둘 다 검증해 처리한다. 이 Mac의 `--serve`는 [StreamingPull 연결](https://cloud.google.com/pubsub/docs/pull)을 열어 알림을 받는다. 수신기는 저장된 cursor부터 `history.list`의 모든 페이지를 조회한 뒤, Firebase 발신 후보만 메일 내용을 읽고 두 개인 앱의 이슈를 처리한다. 메일 전체를 일정 간격으로 조회하는 15분 폴링은 이 경로에 없다.
+3. pending 처리와 history 조회가 성공하고 cursor가 SQLite에 저장된 뒤에만 Pub/Sub ACK를 보낸다. 실패 시 NACK해 재전달받고, 같은 Gmail ID는 SQLite와 이슈 marker로 중복 처리를 막는다. `historyId`가 만료되면 겹침 검색으로 복구한다. Gmail 자체 알림은 드물게 지연·누락될 수 있으므로 현재 1시간 검색 복구 작업은 계속 실행한다. [Gmail 신뢰성 안내](https://developers.google.com/workspace/gmail/api/guides/push#limitations)
+
+Gmail watch는 **최소 7일 이내 재등록**해야 하며 Google은 하루 한 번 갱신을 권장한다. 이는 구독 등록을 유지하는 호출이고 메일 수신 폴링이 아니다. 현재 첫 watch의 만료 시각은 비공개 SQLite에 저장됐고, 일일 갱신 예약은 아직 활성화하지 않았다. 별개로 외부 **Testing** OAuth 앱의 refresh token은 Google 정책상 7일 후 만료될 수 있다. watch를 갱신해도 OAuth 만료가 연장되지는 않는다. [Gmail watch 갱신](https://developers.google.com/workspace/gmail/api/guides/push#renew_mailbox_watch), [OAuth refresh token 만료](https://developers.google.com/identity/protocols/oauth2#expiration)
+
+현재 수신기는 사용자 로그인 세션의 Mac LaunchAgent다. 로그인 세션에서 서비스 PID와 초기 ACK를 확인했지만 Mac 절전·네트워크 단절·재부팅 뒤 자동 재개는 아직 실증하지 않았다. Mac이 깨어 있고 네트워크가 연결되어야 StreamingPull이 즉시 처리한다. 중단 동안의 알림은 Pub/Sub 구독 보관 기간 안에 다시 받을 수 있으며, 그 밖의 누락은 cursor와 기존 시간별 복구 경로로 확인한다. 신규 Firebase 메일이 실제로 도착해 GitHub 이슈까지 처리되는 과정도 아직 검증되지 않았다.
 
 ## 1. 계정과 프로젝트
 
@@ -35,9 +45,9 @@ gcloud services list --enabled --project=PERSONAL_PROJECT_ID
 
 외부 Testing 앱의 제한 범위 refresh token에는 [7일 만료 제한](https://developers.google.com/identity/protocols/oauth2#expiration)이 적용될 수 있다. 장기 운영 전 재인증 절차와 Production 전환을 **별도로** 판단한다. Production 공개나 추가 범위는 이 가이드의 자동 단계가 아니다.
 
-기능 브랜치의 `gmail_push.py`는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user`에서 `gmail.readonly` 사용자 자격증명을 읽고 refresh token과 단일 범위를 확인한다. Desktop 클라이언트 JSON은 별도의 `personal-crashlytics-bot-oauth-client` Keychain 항목에 저장됐지만 런타임 수신기에서 직접 읽지 않는다. 개인 Gmail 동의를 마쳤고 별도 Keychain API로 저장된 토큰의 `getProfile` 호출까지 확인했다. 사용자가 일반 macOS Terminal에서 `scripts/verify_gmail_keychain.py`를 실행해 `gmail_keychain_and_profile_ok`를 확인했다. 이는 해당 사용자 세션의 새 프로세스 Keychain 읽기와 Gmail `getProfile` 성공을 뜻한다. 자동 서비스 프로세스의 Keychain 접근은 별도로 검증해야 한다. 파일과 Keychain 값은 Git에 넣지 않는다. 이 외부 Testing 앱의 refresh token 만료에 대비해 재인증 절차를 마련한다.
+`gmail_push.py`는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user`에서 `gmail.readonly` 사용자 자격증명을 읽고 refresh token과 단일 범위를 확인한다. Desktop 클라이언트 JSON은 별도의 `personal-crashlytics-bot-oauth-client` Keychain 항목에 저장됐지만 런타임 수신기에서 직접 읽지 않는다. 사용자의 일반 macOS Terminal과 운영 checkout의 별도 프로세스에서 `scripts/verify_gmail_keychain.py`의 `gmail_keychain_and_profile_ok`를 확인했다. LaunchAgent도 초기 알림을 ACK했으며 재부팅 뒤 Keychain 접근은 별도로 확인해야 한다. 파일과 Keychain 값은 Git에 넣지 않는다. 이 외부 Testing 앱의 refresh token 만료에 대비해 재인증 절차를 마련한다.
 
-Pub/Sub 수신은 `personal-crashlytics-bot-pubsub-user` Keychain 항목에 `https://www.googleapis.com/auth/pubsub` **단일 범위**의 별도 사용자 OAuth를 요구한다. 사용자가 동의하고 `scripts/authorize_pubsub.py`의 `pubsub_oauth_keychain_saved`를 확인했다. 다음은 일반 Terminal의 새 프로세스에서 `scripts/verify_pubsub_keychain.py --subscription projects/PERSONAL_PROJECT/subscriptions/PERSONAL_SUBSCRIPTION`을 실행해 `pubsub_scope_and_subscription_ok`를 확인하는 단계다. 이 검증은 pull·ACK를 실행하지 않는다. Google의 [Pull](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull)과 [ACK](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/acknowledge) 문서는 이 범위를 허용한다. 기본 `gcloud auth application-default login`의 넓은 Cloud 범위를 이 절차에 사용하지 않는다. Keychain 읽기 실패·범위 불일치·refresh token 누락 시 수신기는 시작하지 않는다.
+Pub/Sub 수신은 `personal-crashlytics-bot-pubsub-user` Keychain 항목에 `https://www.googleapis.com/auth/pubsub` **단일 범위**의 별도 사용자 OAuth를 요구한다. 사용자가 동의하고 `scripts/authorize_pubsub.py`의 `pubsub_oauth_keychain_saved`를 확인했다. 운영 checkout의 별도 프로세스에서 `scripts/verify_pubsub_keychain.py --subscription projects/PERSONAL_PROJECT/subscriptions/PERSONAL_SUBSCRIPTION`의 `pubsub_scope_and_subscription_ok`도 확인했다. 이 검증 자체는 pull·ACK를 실행하지 않는다. Google의 [Pull](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull)과 [ACK](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/acknowledge) 문서는 이 범위를 허용한다. 기본 `gcloud auth application-default login`의 넓은 Cloud 범위를 이 절차에 사용하지 않는다. Keychain 읽기 실패·범위 불일치·refresh token 누락 시 수신기는 시작하지 않는다.
 
 ## 3. Pub/Sub와 최소 IAM
 
@@ -76,7 +86,7 @@ python3 -B gmail_push.py --config PRIVATE_PUSH_JSON \
 
 ## 5. 중복·실패·복구 검증
 
-`python3 -B -m unittest -q`로 로컬 테스트를 실행한다. 이후 허용된 시험 알림으로 Pub/Sub delivery → Gmail history 전체 페이지 → pending 저장 → 대상 분류 → ACK를 관찰한다. 같은 알림 재전송과 동시 callback에서 이슈 중복이 없는지, 실패 때 NACK 후 재전달되는지, ACK 직전 중단 후 재개되는지 확인한다. 비대상 메일은 `From` 메타데이터만 읽고 이슈를 쓰지 않아야 한다. **실제 수신과 이슈 쓰기는 이 작업에서 미검증**이다.
+`python3 -B -m unittest -q`로 로컬 테스트를 실행한다. 초기 watch 알림의 Pub/Sub delivery → Gmail history 조회 → cursor 저장 → ACK는 운영에서 확인했다. 재전달·동시 callback의 중복 방지, 실패 NACK, ACK 직전 중단, history 404 복구는 fixture 테스트로 확인했다. 신규 Firebase 메일이 도착했을 때 대상 분류와 이슈 쓰기까지 이어지는 **운영 검증은 아직 없다**. 비대상 메일은 `From` 메타데이터만 읽고 이슈를 쓰지 않아야 한다.
 
 누락 의심 시 `--recover`는 저장된 history cursor에서 다시 읽는다. Gmail historyId 만료로 404가 나오면 현재 mailbox historyId를 먼저 확보하고, 검색의 **모든 페이지**와 pending ID를 처리한 후 cursor를 바꾼다. 복구 중 도착한 메일은 이후 history에서 다시 처리한다. 불확실한 GitHub POST는 두 번째 이슈를 자동 생성하지 않고 사람이 원격 상태를 확인한다. Pub/Sub 재전송은 미확인 알림을 다시 보내지만 Gmail 알림 자체의 누락을 모두 보장하지 못한다. 기존 1시간 복구 조회는 새 경로와 공유 상태가 운영에서 검증될 때까지 유지한다.
 
