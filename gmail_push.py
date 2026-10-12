@@ -204,11 +204,13 @@ class Receiver:
 
 def on_pubsub_message(receiver, message):
     try:
-        receiver.handle_notification(message.data)
-    except Exception:
+        result = receiver.handle_notification(message.data)
+    except Exception as error:
         message.nack()
+        print(json.dumps({'pubsub': 'nacked', 'error': type(error).__name__}), flush=True)
         return False
     message.ack()
+    print(json.dumps({'pubsub': 'acked', 'status': result['status']}), flush=True)
     return True
 
 

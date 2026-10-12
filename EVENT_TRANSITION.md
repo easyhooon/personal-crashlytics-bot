@@ -6,7 +6,7 @@
 
 Pub/Sub 데이터는 Gmail 메시지 ID가 아닌 `{"emailAddress":"…","historyId":"…"}`다. 수신기는 설정된 개인 계정과 일치하는지 검사하고, SQLite에 저장한 직전 cursor부터 `history.list(historyTypes=messageAdded)`의 모든 페이지를 읽는다. 각 메시지 ID를 기존 SQLite pending에 저장한 다음 `From` 메타데이터만 조회한다. Firebase 발신 메일에 한해 Gmail `full` 객체를 읽고 기존 수신기의 DKIM/DMARC 인증과 두 production Android 앱의 정확한 이슈 URL을 검증해 GitHub 이슈를 동기화한다. 일반 메일은 본문을 읽지 않고 처리 ID만 기록한다. 메일 원문과 stack은 GitHub 이슈에 올리지 않는다.
 
-모든 pending 재처리와 history 페이지가 끝나야 cursor를 전진시킨다. 그 뒤 Pub/Sub를 ACK한다. Gmail·GitHub·상태 저장 중 실패하면 NACK하며 cursor를 유지한다. 재전송과 동시 callback은 같은 Mac의 작업 lock, SQLite 메시지 선점, 원격 이슈 marker로 중복 쓰기를 막는다. 프로세스가 쓰기 후 ACK 전에 종료돼도 다음 delivery가 저장된 cursor 또는 pending에서 재개한다. 이 보장은 한 Mac과 한 공유 상태 경로에 한정된다.
+모든 pending 재처리와 history 페이지가 끝나야 cursor를 전진시킨다. 그 뒤 Pub/Sub를 ACK한다. Gmail·GitHub·상태 저장 중 실패하면 NACK하며 cursor를 유지한다. callback은 메일 내용 없이 `pubsub: acked`와 처리 상태 또는 `pubsub: nacked`와 오류 종류만 기록한다. 재전송과 동시 callback은 같은 Mac의 작업 lock, SQLite 메시지 선점, 원격 이슈 marker로 중복 쓰기를 막는다. 프로세스가 쓰기 후 ACK 전에 종료돼도 다음 delivery가 저장된 cursor 또는 pending에서 재개한다. 이 보장은 한 Mac과 한 공유 상태 경로에 한정된다.
 
 초기 `watch`는 현재 historyId를 받은 뒤 기존 겹침 검색을 완료하고 cursor를 저장한다. 따라서 검색 중 도착한 메일은 이후 history에서 다시 보인다. 이후 `watch` 갱신은 cursor를 덮어쓰지 않는다. 갱신은 메시지를 주기적으로 읽는 폴링이 아니라 구독 유지 호출이다. Gmail은 최소 7일마다 갱신을 요구하고 매일 갱신을 권장한다. 응답의 expiration은 SQLite에 저장한다.
 
