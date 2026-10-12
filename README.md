@@ -27,8 +27,9 @@ python3 -B bot.py --alert-file /absolute/path/alert.json --dry-run
 
 ## 현재 운영 상태
 
-2026-10-12에 확인한 로컬 Codex 예약 `개인 Crashlytics Gmail 수신`은 **1시간 복구 조회로 ACTIVE**다. 과거 문서의 15분 주기는 현재 설정과 다르다. Gmail API와 Pub/Sub API는 개인 Cloud 프로젝트에서 사용 설정됐지만, OAuth·topic·subscription·watch·상주 수신 서비스·watch 갱신 예약은 완료되지 않았다. push 코드의 fixture 테스트는 통과했으나 실제 Gmail 이벤트 수신과 이슈 쓰기는 검증되지 않았다. 기존 1시간 조회는 새 경로 검증 전까지 유지한다.
+2026-10-12에 확인한 로컬 Codex 예약 `개인 Crashlytics Gmail 수신`은 **1시간 복구 조회로 ACTIVE**다. 과거 문서의 15분 주기는 현재 설정과 다르다. 개인 Cloud 콘솔에서 Gmail API·Pub/Sub API, OAuth 테스트 앱·Desktop 클라이언트·읽기 전용 범위, Pub/Sub 주제·구독·Gmail 게시 권한을 확인했다. OAuth 사용자 토큰·로컬 ADC·watch·상주 수신 서비스·watch 갱신 예약은 완료되지 않았다. push 코드의 fixture 테스트는 통과했으나 실제 Gmail 이벤트 수신과 이슈 쓰기는 검증되지 않았다. 기존 1시간 조회는 새 경로 검증 전까지 유지한다.
 
 ## 상세 문서
 
 - [Gmail 수신 전환과 복구 계획](EVENT_TRANSITION.md)
+- [개인 Gmail 이벤트 수신 설정 가이드](docs/PERSONAL_GMAIL_SETUP.md)
