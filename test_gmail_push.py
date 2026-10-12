@@ -5,7 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import gmail_push
 import mail_receiver
@@ -68,6 +68,38 @@ class FakePubsubMessage:
 
 
 class PushTest(unittest.TestCase):
+    def test_keychain_oauth_info_requires_exact_scope_and_refresh_token(self):
+        valid = {
+            'scopes': ['https://www.googleapis.com/auth/gmail.readonly'],
+            'refresh_token': 'fixture-refresh-token',
+        }
+        with patch.object(gmail_push.subprocess, 'run',
+                          return_value=MagicMock(returncode=0, stdout=json.dumps(valid))) as run:
+            self.assertEqual(gmail_push.keychain_oauth_info(
+                'personal-crashlytics-bot-oauth-user',
+                'https://www.googleapis.com/auth/gmail.readonly'), valid)
+            run.assert_called_once_with(
+                ['security', 'find-generic-password', '-s', 'personal-crashlytics-bot-oauth-user',
+                 '-a', 'personal-gmail', '-w'],
+                capture_output=True, text=True)
+        for wrong in ({**valid, 'scopes': ['https://www.googleapis.com/auth/cloud-platform']},
+                      {**valid, 'refresh_token': ''}, []):
+            with patch.object(gmail_push.subprocess, 'run',
+                              return_value=MagicMock(returncode=0, stdout=json.dumps(wrong))):
+                with self.assertRaises(ValueError):
+                    gmail_push.keychain_oauth_info(
+                        'personal-crashlytics-bot-oauth-user',
+                        'https://www.googleapis.com/auth/gmail.readonly')
+
+    def test_keychain_oauth_info_fails_closed(self):
+        for result in (MagicMock(returncode=1, stdout=''),
+                       MagicMock(returncode=0, stdout='not-json')):
+            with patch.object(gmail_push.subprocess, 'run', return_value=result):
+                with self.assertRaises(RuntimeError):
+                    gmail_push.keychain_oauth_info(
+                        'personal-crashlytics-bot-pubsub-user',
+                        'https://www.googleapis.com/auth/pubsub')
+
     def make_receiver(self, tmp):
         root = Path(tmp)
         push_config = root / 'push.json'

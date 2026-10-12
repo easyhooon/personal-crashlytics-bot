@@ -3,10 +3,10 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import json
-import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import tempfile
 import time
 
@@ -212,14 +212,46 @@ def on_pubsub_message(receiver, message):
     return True
 
 
-def live_receiver(args):
-    # Existing, separately provisioned user OAuth and Pub/Sub ADC are required.
+def keychain_oauth_info(service, scope):
+    result = subprocess.run(
+        ['security', 'find-generic-password', '-s', service,
+         '-a', 'personal-gmail', '-w'],
+        capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise RuntimeError('personal-gmail-keychain-unavailable')
+    try:
+        info = json.loads(result.stdout)
+    except ValueError as error:
+        raise RuntimeError('invalid-personal-gmail-keychain-entry') from error
+    if not isinstance(info, dict) or not isinstance(info.get('scopes'), list):
+        raise ValueError('invalid-personal-oauth-keychain-entry')
+    if set(info['scopes']) != {scope} or not info.get('refresh_token'):
+        raise ValueError('personal-oauth-scope-or-refresh-token-mismatch')
+    return info
+
+
+def keychain_gmail_credentials():
     from google.oauth2.credentials import Credentials
+
+    scope = 'https://www.googleapis.com/auth/gmail.readonly'
+    info = keychain_oauth_info('personal-crashlytics-bot-oauth-user', scope)
+    return Credentials.from_authorized_user_info(info, scopes=[scope])
+
+
+def keychain_pubsub_credentials():
+    from google.oauth2.credentials import Credentials
+
+    scope = 'https://www.googleapis.com/auth/pubsub'
+    info = keychain_oauth_info('personal-crashlytics-bot-pubsub-user', scope)
+    return Credentials.from_authorized_user_info(info, scopes=[scope])
+
+
+def live_receiver(args):
+    # Personal Gmail and Pub/Sub OAuth are separate least-scope Keychain items.
     from googleapiclient.discovery import build
     from google.cloud import pubsub_v1
-    oauth_file = os.environ['PERSONAL_GMAIL_OAUTH_FILE']
-    credentials = Credentials.from_authorized_user_file(
-        oauth_file, scopes=['https://www.googleapis.com/auth/gmail.readonly'])
+    credentials = keychain_gmail_credentials()
     gmail = GmailApi(build('gmail', 'v1', credentials=credentials, cache_discovery=False))
     receiver = Receiver(gmail, bot.GitHub(), args.config, args.runtime_config, args.state)
     return receiver, pubsub_v1
@@ -241,7 +273,7 @@ def main():
     elif args.recover:
         result = receiver.reconcile()
     else:
-        with pubsub_v1.SubscriberClient() as subscriber:
+        with pubsub_v1.SubscriberClient(credentials=keychain_pubsub_credentials()) as subscriber:
             future = subscriber.subscribe(receiver.config['subscription_name'],
                                           callback=lambda message: on_pubsub_message(receiver, message))
             try:

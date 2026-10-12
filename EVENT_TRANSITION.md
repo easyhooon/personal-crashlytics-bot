@@ -1,6 +1,6 @@
 # 개인 Gmail push 수신 전환
 
-현재 운영 중인 것은 기존 Codex 1시간 Gmail 검색 복구 작업이다. 이 문서의 직접 Gmail API `watch` → Cloud Pub/Sub StreamingPull → `history.list` 경로는 **코드와 fixture 테스트만 준비**됐다. 개인 OAuth, Pub/Sub 자원, watch, 상주 서비스, 갱신·복구 예약은 설정하거나 활성화하지 않았다. 기존 복구 작업은 새 경로의 실제 수신을 확인할 때까지 유지한다.
+현재 운영 중인 것은 기존 Codex 1시간 Gmail 검색 복구 작업이다. 직접 Gmail API `watch` → Cloud Pub/Sub StreamingPull → `history.list` 경로는 코드와 fixture 테스트가 준비됐다. 개인 Gmail 읽기 전용 OAuth와 API `getProfile` 호출, Pub/Sub 주제·7일 pull 구독·Gmail 게시 권한은 확인했다. Pub/Sub 수신자 OAuth, watch, 상주 서비스, 갱신·복구 예약과 실제 알림 수신은 미완료다. 기존 복구 작업은 새 경로의 실제 수신을 확인할 때까지 유지한다.
 
 ## 입력과 처리
 
@@ -14,7 +14,7 @@ historyId가 만료되어 `history.list`가 404를 반환하면 먼저 현재 ma
 
 ## 로컬 실행 계약
 
-`push.example.json`을 참고해 개인 전용 비공개 설정을 만든다. `gmail_email`은 읽을 개인 mailbox, `topic_name`은 Gmail watch 게시 대상, `subscription_name`은 이 프로세스가 읽을 Pub/Sub 구독이다. 기존 `receiver.json`과 `gmail.sqlite`는 현재 개인 봇의 **동일한 영속 경로**를 사용해야 한다. `PERSONAL_GMAIL_OAUTH_FILE`은 승인된 기존 사용자 OAuth authorized-user 파일 경로다. Pub/Sub 구독 인증은 승인된 Google ADC를 사용한다. 자격증명은 Git에 넣지 않는다.
+`push.example.json`을 참고해 개인 전용 비공개 설정을 만든다. `gmail_email`은 읽을 개인 mailbox, `topic_name`은 Gmail watch 게시 대상, `subscription_name`은 이 프로세스가 읽을 Pub/Sub 구독이다. 기존 `receiver.json`과 `gmail.sqlite`는 현재 개인 봇의 **동일한 영속 경로**를 사용해야 한다. Gmail OAuth는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user` 항목에서 읽는다. Pub/Sub 수신은 별도의 `personal-crashlytics-bot-pubsub-user` 항목과 `https://www.googleapis.com/auth/pubsub` 단일 범위를 요구한다. 후자 발급은 아직 미완료다. 자격증명은 Git에 넣지 않는다.
 
 ```bash
 python3 -m pip install -r requirements-push.txt
@@ -23,11 +23,11 @@ python3 -B gmail_push.py --config PRIVATE_PUSH_JSON --runtime-config PRIVATE_REC
 python3 -B gmail_push.py --config PRIVATE_PUSH_JSON --runtime-config PRIVATE_RECEIVER_JSON --state PRIVATE_GMAIL_SQLITE --recover
 ```
 
-`--serve`는 Pub/Sub StreamingPull을 사용하며 주기적 Gmail 메시지 조회가 아니다. `--renew-watch`는 매일, `--recover`는 누락 감시를 위해 한 시간마다 실행하도록 **승인 후** 운영 예약을 구성한다. 이 코드는 Cloud 프로젝트·topic·subscription·IAM·OAuth 자격증명이나 예약을 생성하지 않는다. 현재 기존 Gmail connector 인증이 별도 Python OAuth 파일로 재사용 가능한지는 확인되지 않았다.
+`--serve`는 Pub/Sub StreamingPull을 사용하며 주기적 Gmail 메시지 조회가 아니다. `--renew-watch`는 매일, `--recover`는 누락 감시를 위해 한 시간마다 실행하도록 **승인 후** 운영 예약을 구성한다. 이 코드는 Cloud 프로젝트·topic·subscription·IAM·OAuth 자격증명이나 예약을 생성하지 않는다.
 
 의존성 설치 명령은 서비스를 시작하지 않는다. 반면 `--renew-watch`는 즉시 Gmail watch를 등록하고, `--serve`는 즉시 구독을 시작하며 메시지에 따라 개인 앱 GitHub 이슈를 쓸 수 있다. `--recover`도 즉시 Gmail을 읽고 이슈를 쓸 수 있다. `launchctl bootstrap` 또는 `kickstart`로 만든 상주 작업도 즉시 실행될 수 있으므로 운영 Mac 경로와 권한 확인 전에는 실행하지 않는다.
 
-직접 API의 최소 Gmail OAuth 범위는 `https://www.googleapis.com/auth/gmail.readonly`다. 전체 mailbox의 history와 `From` 메타데이터를 읽으며 Firebase 발신 후보에만 본문을 조회한다. 개인 OAuth 앱의 Google Cloud 프로젝트는 Gmail watch topic의 프로젝트와 일치해야 한다. 해당 topic에는 Gmail 게시 주체의 Pub/Sub Publisher 권한, 구독 실행 계정에는 해당 subscription의 Pub/Sub Subscriber 권한이 필요하다. 개인 Gmail connector의 OAuth나 회사용 자격증명을 이 프로세스에 복사하지 않는다. OAuth 파일 대신 Mac Keychain을 사용하려면 별도의 승인된 credential 로딩 경로가 필요하며 현재 코드는 이를 구현하지 않았다.
+직접 API의 최소 Gmail OAuth 범위는 `https://www.googleapis.com/auth/gmail.readonly`다. 전체 mailbox의 history와 `From` 메타데이터를 읽으며 Firebase 발신 후보에만 본문을 조회한다. 개인 OAuth 앱의 Google Cloud 프로젝트는 Gmail watch topic의 프로젝트와 일치해야 한다. 해당 topic에는 Gmail 게시 주체의 Pub/Sub Publisher 권한, 구독 실행 계정에는 해당 subscription의 Pub/Sub Subscriber 권한이 필요하다. 개인 Gmail connector의 OAuth나 회사용 자격증명을 이 프로세스에 복사하지 않는다. Keychain 로더는 요구 범위와 refresh token을 확인하고 다른 범위·누락·읽기 실패에서 수신기를 시작하지 않는다.
 
 활성화 전에 개인 Gmail 계정과 읽기 범위, 개인 Cloud 프로젝트·topic·subscription, Gmail 게시 권한, Pub/Sub 구독자 인증, 운영 Mac과 공유 상태 경로, 개인 앱 GitHub 이슈 쓰기 대상에 대한 승인이 필요하다. 실제 `watch` 등록과 첫 메일 수신·ACK/NACK·중복·history 404·갱신·복구의 운영 검증 후 예약 전환을 결정한다. 회사 봇의 상태·인증·runner와 공유하지 않는다.
 
