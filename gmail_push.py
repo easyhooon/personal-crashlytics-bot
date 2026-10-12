@@ -24,6 +24,14 @@ def history_id(value):
     return value
 
 
+def notification_history_id(value):
+    # Gmail's Pub/Sub JSON can encode this decimal ID as a number, while
+    # Gmail API responses use a string. Reject booleans and non-integers.
+    if type(value) is int:
+        value = str(value)
+    return history_id(value)
+
+
 def load_config(path):
     config = json.loads(Path(path).read_text())
     for key in ('gmail_email', 'topic_name', 'subscription_name'):
@@ -198,7 +206,7 @@ class Receiver:
         notice = json.loads(data)
         if notice.get('emailAddress', '').lower() != self.config['gmail_email'].lower():
             raise ValueError('gmail-notification-account-mismatch')
-        history_id(notice.get('historyId'))
+        notification_history_id(notice.get('historyId'))
         return self.reconcile()
 
 

@@ -135,7 +135,7 @@ class PushTest(unittest.TestCase):
                  'nextPageToken': '1', 'historyId': '102'},
                 {'history': [{'messagesAdded': [{'message': {'id': 'a2'}}]}], 'historyId': '105'},
             ]
-            first = FakePubsubMessage('105')
+            first = FakePubsubMessage(105)
             self.assertTrue(gmail_push.on_pubsub_message(receiver, first))
             self.assertEqual((first.acks, first.nacks), (1, 0))
             self.assertEqual(receiver._cursor(), '105')
@@ -273,6 +273,10 @@ class PushTest(unittest.TestCase):
             wrong = FakePubsubMessage(email='other@example.test')
             self.assertFalse(gmail_push.on_pubsub_message(receiver, wrong))
             self.assertEqual((wrong.acks, wrong.nacks), (0, 1))
+            self.assertEqual(gmail.history_calls, [])
+            invalid = FakePubsubMessage(history_id=True)
+            self.assertFalse(gmail_push.on_pubsub_message(receiver, invalid))
+            self.assertEqual((invalid.acks, invalid.nacks), (0, 1))
             self.assertEqual(gmail.history_calls, [])
 
     def test_google_api_adapter_maps_history_404(self):
