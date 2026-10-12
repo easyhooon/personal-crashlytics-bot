@@ -1,6 +1,6 @@
 # 개인 Gmail 이벤트 수신 전환과 시간별 복구 조회
 
-현재 운영 중인 것은 기존 Codex 1시간 Gmail 검색 복구 작업이다. 직접 Gmail API `watch` → Cloud Pub/Sub StreamingPull → `history.list` 경로는 코드와 fixture 테스트가 준비됐다. 개인 Gmail 읽기 전용 OAuth와 API `getProfile` 호출, Pub/Sub 주제·7일 pull 구독·Gmail 게시 권한은 확인했다. Pub/Sub 수신자 OAuth, watch, 상주 서비스, 갱신·복구 예약과 실제 알림 수신은 미완료다. 기존 복구 작업은 새 경로의 실제 수신을 확인할 때까지 유지한다.
+현재 운영 중인 것은 기존 Codex 1시간 Gmail 검색 복구 작업이다. 직접 Gmail API `watch` → Cloud Pub/Sub StreamingPull → `history.list` 경로는 코드와 fixture 테스트가 준비됐다. 개인 Gmail 읽기 전용 OAuth와 API `getProfile` 호출, Pub/Sub 주제·7일 pull 구독·Gmail 게시 권한을 확인했고 Pub/Sub 단일 범위 OAuth를 Keychain에 저장했다. Pub/Sub 자격증명의 별도 프로세스 구독 조회, watch, 상주 서비스, 갱신·복구 예약과 실제 알림 수신은 미완료다. 기존 복구 작업은 새 경로의 실제 수신을 확인할 때까지 유지한다.
 
 ## 입력과 처리
 
@@ -14,7 +14,7 @@ historyId가 만료되어 `history.list`가 404를 반환하면 먼저 현재 ma
 
 ## 로컬 실행 계약
 
-`push.example.json`을 참고해 개인 전용 비공개 설정을 만든다. `gmail_email`은 읽을 개인 mailbox, `topic_name`은 Gmail watch 게시 대상, `subscription_name`은 이 프로세스가 읽을 Pub/Sub 구독이다. 기존 `receiver.json`과 `gmail.sqlite`는 현재 개인 봇의 **동일한 영속 경로**를 사용해야 한다. Gmail OAuth는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user` 항목에서 읽는다. Pub/Sub 수신은 별도의 `personal-crashlytics-bot-pubsub-user` 항목과 `https://www.googleapis.com/auth/pubsub` 단일 범위를 요구한다. 후자 발급은 아직 미완료다. 새 Keychain 로더의 실제 읽기도 현재 제한된 실행 환경에서 기본 검색 목록 오류 `-50`, 명시적 기본 Keychain 조회의 항목 없음 `-25300`으로 실패해 운영 호스트 검증이 남았다. 자격증명은 Git에 넣지 않는다.
+`push.example.json`을 참고해 개인 전용 비공개 설정을 만든다. `gmail_email`은 읽을 개인 mailbox, `topic_name`은 Gmail watch 게시 대상, `subscription_name`은 이 프로세스가 읽을 Pub/Sub 구독이다. 기존 `receiver.json`과 `gmail.sqlite`는 현재 개인 봇의 **동일한 영속 경로**를 사용해야 한다. Gmail OAuth는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user` 항목에서 읽는다. Pub/Sub 수신은 별도의 `personal-crashlytics-bot-pubsub-user` 항목과 `https://www.googleapis.com/auth/pubsub` 단일 범위를 요구한다. 후자를 Keychain에 저장했으며 별도 프로세스 조회는 미검증이다. 사용자가 일반 Terminal에서 별도 검증 스크립트의 `gmail_keychain_and_profile_ok`를 확인했다. 자동 서비스 프로세스의 Keychain 접근은 아직 검증되지 않았다. 자격증명은 Git에 넣지 않는다.
 
 ```bash
 python3 -m pip install -r requirements-push.txt

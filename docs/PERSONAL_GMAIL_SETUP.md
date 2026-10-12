@@ -2,7 +2,7 @@
 
 이 가이드는 개인 Gmail `watch` → Cloud Pub/Sub → StreamingPull → `history.list` 경로를 재현하는 순서다. `PERSONAL_*`은 각자 확인한 값으로 바꾼다. 실제 계정, 프로젝트, 앱 ID, 토큰, 비공개 경로를 저장소에 기록하지 않는다. 회사 계정·프로젝트·인증·상태 DB와 혼합하지 않는다.
 
-**2026-10-12 확인 범위:** 개인 Cloud 콘솔에서 Gmail API와 Pub/Sub API, 외부 Testing OAuth 앱의 테스트 사용자·Desktop 클라이언트·`gmail.readonly` 범위, Pub/Sub 주제·pull 구독(7일 보관)·Gmail 게시자 권한을 확인했다. 개인 Gmail 읽기 전용 OAuth 사용자 토큰을 Keychain에 저장하고 `getProfile` 호출을 확인했다. Pub/Sub 단일 범위 OAuth, Gmail watch, 상주 수신기, 실제 알림 수신·ACK/NACK, 갱신 예약은 **미검증**이다. 프로젝트에 결제 계정이 연결되지 않았으며 결제가 요구되면 연결 전에 별도로 판단한다. 기존 1시간 복구 조회는 새 경로 검증 전까지 유지한다.
+**2026-10-12 확인 범위:** 개인 Cloud 콘솔에서 Gmail API와 Pub/Sub API, 외부 Testing OAuth 앱의 테스트 사용자·Desktop 클라이언트·`gmail.readonly` 범위, Pub/Sub 주제·pull 구독(7일 보관)·Gmail 게시자 권한을 확인했다. 개인 Gmail 읽기 전용 OAuth 사용자 토큰을 Keychain에 저장하고 `getProfile` 호출을 확인했다. Pub/Sub 단일 범위 OAuth도 사용자의 Terminal에서 Keychain에 저장했으며, 별도 프로세스의 구독 조회는 아직 미검증이다. Gmail watch, 상주 수신기, 실제 알림 수신·ACK/NACK, 갱신 예약도 **미검증**이다. 프로젝트에 결제 계정이 연결되지 않았으며 결제가 요구되면 연결 전에 별도로 판단한다. 기존 1시간 복구 조회는 새 경로 검증 전까지 유지한다.
 
 ## 1. 계정과 프로젝트
 
@@ -35,9 +35,9 @@ gcloud services list --enabled --project=PERSONAL_PROJECT_ID
 
 외부 Testing 앱의 제한 범위 refresh token에는 [7일 만료 제한](https://developers.google.com/identity/protocols/oauth2#expiration)이 적용될 수 있다. 장기 운영 전 재인증 절차와 Production 전환을 **별도로** 판단한다. Production 공개나 추가 범위는 이 가이드의 자동 단계가 아니다.
 
-기능 브랜치의 `gmail_push.py`는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user`에서 `gmail.readonly` 사용자 자격증명을 읽고 refresh token과 단일 범위를 확인한다. Desktop 클라이언트 JSON은 별도의 `personal-crashlytics-bot-oauth-client` Keychain 항목에 저장됐지만 런타임 수신기에서 직접 읽지 않는다. 개인 Gmail 동의를 마쳤고 별도 Keychain API로 저장된 토큰의 `getProfile` 호출까지 확인했다. 그러나 현재 제한된 실행 환경에서 새 런타임 Keychain 로더의 실제 읽기는 실패한다. 암묵적 Keychain 검색 목록은 `-50`, 현재 사용자의 기본 로그인 Keychain을 명시한 조회는 `-25300`(항목 없음)이다. 이전 저장 직후 같은 Security API의 `SecItemCopyMatching`은 성공했으므로 호출 시그니처나 반환 타입 차이로 단정할 수 없다. 운영 호스트의 동일 사용자 로그인 세션에서 Keychain 항목의 존재와 접근 승인을 직접 확인한 뒤 로더 조회·`getProfile`을 다시 검증해야 한다. ACL 수정이나 평문 파일 대체 없이 진행한다. 파일과 Keychain 값은 Git에 넣지 않는다. 이 외부 Testing 앱의 refresh token 만료에 대비해 재인증 절차를 마련한다.
+기능 브랜치의 `gmail_push.py`는 개인 로그인 Keychain의 `personal-crashlytics-bot-oauth-user`에서 `gmail.readonly` 사용자 자격증명을 읽고 refresh token과 단일 범위를 확인한다. Desktop 클라이언트 JSON은 별도의 `personal-crashlytics-bot-oauth-client` Keychain 항목에 저장됐지만 런타임 수신기에서 직접 읽지 않는다. 개인 Gmail 동의를 마쳤고 별도 Keychain API로 저장된 토큰의 `getProfile` 호출까지 확인했다. 사용자가 일반 macOS Terminal에서 `scripts/verify_gmail_keychain.py`를 실행해 `gmail_keychain_and_profile_ok`를 확인했다. 이는 해당 사용자 세션의 새 프로세스 Keychain 읽기와 Gmail `getProfile` 성공을 뜻한다. 자동 서비스 프로세스의 Keychain 접근은 별도로 검증해야 한다. 파일과 Keychain 값은 Git에 넣지 않는다. 이 외부 Testing 앱의 refresh token 만료에 대비해 재인증 절차를 마련한다.
 
-Pub/Sub 수신은 `personal-crashlytics-bot-pubsub-user` Keychain 항목에 `https://www.googleapis.com/auth/pubsub` **단일 범위**의 별도 사용자 OAuth를 요구한다. 이 인증은 아직 발급하지 않았다. Google의 [Pull](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull)과 [ACK](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/acknowledge) 문서는 이 범위를 허용한다. 새 OAuth 범위에 대한 사용자 승인 전에는 인증을 발급하지 않는다. 기본 `gcloud auth application-default login`의 넓은 Cloud 범위를 이 절차에 사용하지 않는다. Keychain 읽기 실패·범위 불일치·refresh token 누락 시 수신기는 시작하지 않는다.
+Pub/Sub 수신은 `personal-crashlytics-bot-pubsub-user` Keychain 항목에 `https://www.googleapis.com/auth/pubsub` **단일 범위**의 별도 사용자 OAuth를 요구한다. 사용자가 동의하고 `scripts/authorize_pubsub.py`의 `pubsub_oauth_keychain_saved`를 확인했다. 다음은 일반 Terminal의 새 프로세스에서 `scripts/verify_pubsub_keychain.py --subscription projects/PERSONAL_PROJECT/subscriptions/PERSONAL_SUBSCRIPTION`을 실행해 `pubsub_scope_and_subscription_ok`를 확인하는 단계다. 이 검증은 pull·ACK를 실행하지 않는다. Google의 [Pull](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull)과 [ACK](https://cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/acknowledge) 문서는 이 범위를 허용한다. 기본 `gcloud auth application-default login`의 넓은 Cloud 범위를 이 절차에 사용하지 않는다. Keychain 읽기 실패·범위 불일치·refresh token 누락 시 수신기는 시작하지 않는다.
 
 ## 3. Pub/Sub와 최소 IAM
 
@@ -62,7 +62,7 @@ gcloud pubsub subscriptions describe PERSONAL_SUBSCRIPTION --project=PERSONAL_PR
 
 ## 4. 비공개 설정과 첫 수신
 
-직접 수신 코드는 [`feat/event-receiver-completion`](https://github.com/easyhooon/personal-crashlytics-bot/tree/feat/event-receiver-completion)에 있고 이 문서 작성 시 `main`에 병합되지 않았다. 해당 브랜치의 `push.example.json`을 참고해 개인 Gmail 주소와 완전한 `projects/PERSONAL_PROJECT_ID/topics/PERSONAL_TOPIC`, `projects/PERSONAL_PROJECT_ID/subscriptions/PERSONAL_SUBSCRIPTION`을 적는다. 기존 복구 작업의 `receiver.json`과 `gmail.sqlite`는 운영 호스트의 **같은 영속 경로**를 사용한다. 다른 Mac이나 빈 checkout의 DB로 기존 checkpoint를 대체하지 않는다.
+직접 수신 코드 [`gmail_push.py`](../gmail_push.py)와 [`push.example.json`](../push.example.json)을 참고해 개인 Gmail 주소와 완전한 `projects/PERSONAL_PROJECT_ID/topics/PERSONAL_TOPIC`, `projects/PERSONAL_PROJECT_ID/subscriptions/PERSONAL_SUBSCRIPTION`을 적는다. 기존 복구 작업의 `receiver.json`과 `gmail.sqlite`는 운영 호스트의 **같은 영속 경로**를 사용한다. 다른 Mac이나 빈 checkout의 DB로 기존 checkpoint를 대체하지 않는다.
 
 ```bash
 python3 -m pip install -r requirements-push.txt
