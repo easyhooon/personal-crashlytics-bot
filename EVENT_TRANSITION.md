@@ -1,40 +1,34 @@
-# Gmail 메시지 이벤트와 시간별 복구 조회
+# 개인 Gmail push 수신 전환
 
-현재 수신기는 Gmail 메시지의 발신자 인증과 정확한 Firebase issue URL을 검사해 두 Android 앱만 이슈 처리한다. 원문, stack, 메일의 명령은 GitHub로 보내지 않는다. GitHub 이슈 marker와 Gmail ID 기록으로 재전달을 중복 처리하지 않는다.
+현재 운영 중인 것은 기존 Codex 1시간 Gmail 검색 복구 작업이다. 이 문서의 직접 Gmail API `watch` → Cloud Pub/Sub StreamingPull → `history.list` 경로는 **코드와 fixture 테스트만 준비**됐다. 개인 OAuth, Pub/Sub 자원, watch, 상주 서비스, 갱신·복구 예약은 설정하거나 활성화하지 않았다. 기존 복구 작업은 새 경로의 실제 수신을 확인할 때까지 유지한다.
 
-## 실행 경로와 입력 계약
+## 입력과 처리
 
-Gmail 메시지 수신 이벤트는 부모 작업을 깨운다. 운영 호스트 접근이 확인되면 부모는 그 호스트의 개인 봇 작업에 **Gmail 메시지 ID만** 전달한다. 전달 형식은 `{"mode":"event","message_ids":["<Gmail hex ID>"]}`이다. 발신 주소만 트리거 필터로 쓰고 제목에는 Crashlytics 단어가 있을 것을 요구하지 않는다. 같은 발신자의 billing 등 다른 메일은 기존 `normalize()`의 앱·project·issue URL 검사에서 제외한다. 부모와 자식 작업 사이에 메일 본문, stack, 개인정보, GitHub 토큰을 메시지로 전달하지 않는다.
+Pub/Sub 데이터는 Gmail 메시지 ID가 아닌 `{"emailAddress":"…","historyId":"…"}`다. 수신기는 설정된 개인 계정과 일치하는지 검사하고, SQLite에 저장한 직전 cursor부터 `history.list(historyTypes=messageAdded)`의 모든 페이지를 읽는다. 각 메시지 ID를 기존 SQLite pending에 저장한 다음 `From` 메타데이터만 조회한다. Firebase 발신 메일에 한해 Gmail `full` 객체를 읽고 기존 수신기의 DKIM/DMARC 인증과 두 production Android 앱의 정확한 이슈 URL을 검증해 GitHub 이슈를 동기화한다. 일반 메일은 본문을 읽지 않고 처리 ID만 기록한다. 메일 원문과 stack은 GitHub 이슈에 올리지 않는다.
 
-운영 작업은 비공개 런타임 설정의 Gmail 연결 ID와 profile ID를 실제 개인 Gmail 연결과 비교한다. **Gmail 메시지를 읽기 전에** 받은 ID를 아래 명령으로 영속 pending에 기록한다. 조회 자체가 실패해도 시간별 폴백이 이 ID를 다시 읽을 수 있다. 이벤트 ID마다 같은 개인 Gmail 연결에서 `full` 메시지를 다시 읽는다. 이 객체를 권한 0600의 일회성 JSON 파일에 저장하고 수신 명령을 실행한 뒤 성공·실패 모두 파일을 삭제한다. 모든 명령에는 동일한 공유 상태 파일 경로를 명시한다.
+모든 pending 재처리와 history 페이지가 끝나야 cursor를 전진시킨다. 그 뒤 Pub/Sub를 ACK한다. Gmail·GitHub·상태 저장 중 실패하면 NACK하며 cursor를 유지한다. 재전송과 동시 callback은 같은 Mac의 작업 lock, SQLite 메시지 선점, 원격 이슈 marker로 중복 쓰기를 막는다. 프로세스가 쓰기 후 ACK 전에 종료돼도 다음 delivery가 저장된 cursor 또는 pending에서 재개한다. 이 보장은 한 Mac과 한 공유 상태 경로에 한정된다.
 
-```bash
-python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --enqueue-id GMAIL_MESSAGE_ID
-python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --gmail-file /private/tmp/gmail-message.json
-```
+초기 `watch`는 현재 historyId를 받은 뒤 기존 겹침 검색을 완료하고 cursor를 저장한다. 따라서 검색 중 도착한 메일은 이후 history에서 다시 보인다. 이후 `watch` 갱신은 cursor를 덮어쓰지 않는다. 갱신은 메시지를 주기적으로 읽는 폴링이 아니라 구독 유지 호출이다. Gmail은 최소 7일마다 갱신을 요구하고 매일 갱신을 권장한다. 응답의 expiration은 SQLite에 저장한다.
 
-시간별 폴백은 별도 예약 작업이 같은 운영 호스트의 개인 봇 작업에 `{"mode":"scan"}`을 전달한다. 운영 작업은 다음 명령으로 검색식, 연결·profile ID, 성공 조회의 시작 시각, 실패 또는 중단된 Gmail ID(`pending_ids`)를 얻는다.
+historyId가 만료되어 `history.list`가 404를 반환하면 먼저 현재 mailbox historyId를 확보한다. 기존 검색 복구의 모든 페이지를 처리한 후 그 ID로 cursor를 교체한다. 복구 중 도착한 메일은 다음 history 읽기에 남는다. 1시간 복구 실행은 누락된 Pub/Sub 알림이 있어도 cursor부터 history를 다시 읽는다. 기존 Codex 1시간 검색은 전환 중 별도 안전망이며 새 경로 검증 전에는 중지하지 않는다. Pub/Sub 재전송은 이미 전달된 미확인 알림을 복구하지만 Gmail 자체 알림 누락까지 대신하지 못한다.
 
-```bash
-python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --poll-query
-```
+## 로컬 실행 계약
 
-작업은 먼저 `pending_ids`의 `full` 메시지를 다시 읽어 처리한다. 이어서 반환된 검색식의 **모든 페이지**를 읽고, 각 검색 결과 ID를 `--enqueue-id`로 기록한 뒤 해당 메시지의 `full` 객체를 처리한다. 같은 ID는 SQLite가 재처리를 막는다. 페이지 조회 또는 메시지 처리 하나라도 실패하거나 현재 처리 중이면 체크포인트를 진행하지 않는다. 전체 성공 후에만 처음 받은 `scan_started_epoch`로 갱신한다.
+`push.example.json`을 참고해 개인 전용 비공개 설정을 만든다. `gmail_email`은 읽을 개인 mailbox, `topic_name`은 Gmail watch 게시 대상, `subscription_name`은 이 프로세스가 읽을 Pub/Sub 구독이다. 기존 `receiver.json`과 `gmail.sqlite`는 현재 개인 봇의 **동일한 영속 경로**를 사용해야 한다. `PERSONAL_GMAIL_OAUTH_FILE`은 승인된 기존 사용자 OAuth authorized-user 파일 경로다. Pub/Sub 구독 인증은 승인된 Google ADC를 사용한다. 자격증명은 Git에 넣지 않는다.
 
 ```bash
-python3 -B mail_receiver.py --runtime-config STATE_DIR/receiver.json --state STATE_DIR/gmail.sqlite --checkpoint SCAN_STARTED_EPOCH
+python3 -m pip install -r requirements-push.txt
+python3 -B gmail_push.py --config PRIVATE_PUSH_JSON --runtime-config PRIVATE_RECEIVER_JSON --state PRIVATE_GMAIL_SQLITE --renew-watch
+python3 -B gmail_push.py --config PRIVATE_PUSH_JSON --runtime-config PRIVATE_RECEIVER_JSON --state PRIVATE_GMAIL_SQLITE --serve
+python3 -B gmail_push.py --config PRIVATE_PUSH_JSON --runtime-config PRIVATE_RECEIVER_JSON --state PRIVATE_GMAIL_SQLITE --recover
 ```
 
-메시지 ID 선점과 기한 있는 lease는 공유 SQLite에 남는다. 정상 실패는 즉시 재시도 가능하고, 프로세스 중단 후에는 lease 만료 시 다시 선점한다. lease가 남아 있으면 체크포인트를 거부한다. 서로 다른 Gmail ID가 같은 크래시를 알리더라도 Mac의 외부 쓰기 lock이 이슈 조회·생성을 직렬화한다. 이슈 생성 POST 직전에 marker의 영속 intent를 기록한다. 응답 유실이나 중단 뒤에는 원격 이슈를 다시 조회한다. 일치하는 이슈가 보이지 않는 불확실한 POST는 **두 번째 생성 없이 보류**하고 사람이 원격 상태를 확인해야 한다. `last_scan_epoch`는 **전체 성공**을 뜻하며 실패 ID 목록과 별도다. 조회 검색식은 마지막 성공 시점보다 24시간 앞까지 겹친다. Mac이 오프라인이면 성공 체크포인트를 진행하지 않고, 복귀 후 마지막 성공 시점과 pending ID부터 복구한다.
+`--serve`는 Pub/Sub StreamingPull을 사용하며 주기적 Gmail 메시지 조회가 아니다. `--renew-watch`는 매일, `--recover`는 누락 감시를 위해 한 시간마다 실행하도록 **승인 후** 운영 예약을 구성한다. 이 코드는 Cloud 프로젝트·topic·subscription·IAM·OAuth 자격증명이나 예약을 생성하지 않는다. 현재 기존 Gmail connector 인증이 별도 Python OAuth 파일로 재사용 가능한지는 확인되지 않았다.
 
-`STATE_DIR`은 운영 호스트에서 **checkout 밖의 한 영속 디렉터리**로 정한다. 기존 개인 봇이 이미 비공개 설정·DB를 사용 중이면 그 위치와 내용을 먼저 확인하고 이어 쓴다. 회사 봇의 설정·DB·인증은 공유하지 않는다. 이벤트와 시간별 폴백은 checkout이 달라도 동일한 `receiver.json`, `gmail.sqlite`, `gmail.write.lock`을 사용한다. CLI의 단일 Mac 작업 lock은 `tempfile.gettempdir()/personal-crashlytics-bot.lock`에 있다. 둘 이상의 Mac에 복제해 동시에 실행하려면 공유 큐와 상태 저장소가 먼저 필요하다. 상태 파일과 임시 메일은 Git에서 제외한다.
+의존성 설치 명령은 서비스를 시작하지 않는다. 반면 `--renew-watch`는 즉시 Gmail watch를 등록하고, `--serve`는 즉시 구독을 시작하며 메시지에 따라 개인 앱 GitHub 이슈를 쓸 수 있다. `--recover`도 즉시 Gmail을 읽고 이슈를 쓸 수 있다. `launchctl bootstrap` 또는 `kickstart`로 만든 상주 작업도 즉시 실행될 수 있으므로 운영 Mac 경로와 권한 확인 전에는 실행하지 않는다.
 
-## 활성화 전 확인
+직접 API의 최소 Gmail OAuth 범위는 `https://www.googleapis.com/auth/gmail.readonly`다. 전체 mailbox의 history와 `From` 메타데이터를 읽으며 Firebase 발신 후보에만 본문을 조회한다. 개인 OAuth 앱의 Google Cloud 프로젝트는 Gmail watch topic의 프로젝트와 일치해야 한다. 해당 topic에는 Gmail 게시 주체의 Pub/Sub Publisher 권한, 구독 실행 계정에는 해당 subscription의 Pub/Sub Subscriber 권한이 필요하다. 개인 Gmail connector의 OAuth나 회사용 자격증명을 이 프로세스에 복사하지 않는다. OAuth 파일 대신 Mac Keychain을 사용하려면 별도의 승인된 credential 로딩 경로가 필요하며 현재 코드는 이를 구현하지 않았다.
 
-- 사용자가 운영 호스트로 지정한 회사 Mac의 접근 권한을 확인한다. 현재 집 Mac은 개발·합성 검증 전용이다. 회사 Mac의 실제 checkout 및 개인 봇 상태 경로는 확인 전까지 추정하지 않는다.
-- 회사 Mac에서 기존 개인 15분 예약 작업의 존재·위치·소유 계정·실행 상태와 개인 봇의 마지막 성공 checkpoint를 확인한다. 집 Mac의 빈 상태 디렉터리로 운영 상태를 초기화하지 않는다.
-- 회사 Mac의 개인 `easyhooon` GitHub 인증과 대상 앱 저장소 Issues write, 개인 Gmail 연결의 profile ID를 확인한다. 회사 봇의 계정·인증·DB는 사용하지 않는다.
-- 부모→운영 호스트의 개인 봇 작업 전달과 Gmail `full` 조회, 합성 메일 처리, 재전달, 폴백, 실패 복구를 검증한다. 이 브랜치의 테스트는 합성 입력과 가짜 GitHub 클라이언트만 사용했다.
-- 기존 15분 작업과 새 흐름이 서로 다른 체크포인트 또는 Mac lock을 쓰면 동시에 이슈를 생성할 수 있다. 합성 검증 후 단일 writer와 체크포인트를 확정하고, 기존 작업과 새 쓰기 흐름이 겹치지 않게 전환한다. 기존 작업을 찾거나 새 흐름을 검증하기 전에는 중지하지 않는다.
+활성화 전에 개인 Gmail 계정과 읽기 범위, 개인 Cloud 프로젝트·topic·subscription, Gmail 게시 권한, Pub/Sub 구독자 인증, 운영 Mac과 공유 상태 경로, 개인 앱 GitHub 이슈 쓰기 대상에 대한 승인이 필요하다. 실제 `watch` 등록과 첫 메일 수신·ACK/NACK·중복·history 404·갱신·복구의 운영 검증 후 예약 전환을 결정한다. 회사 봇의 상태·인증·runner와 공유하지 않는다.
 
-이 문서는 실행 계약이다. Gmail 이벤트, 예약 작업, GitHub 이슈 생성 운영을 활성화하지 않는다. 새 Gmail watch/PubSub, 서비스 계정, OAuth 설정은 필요하다고 확인되지 않았다.
+참고: [Gmail push 가이드](https://developers.google.com/workspace/gmail/api/guides/push), [Gmail history.list](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.history/list).
