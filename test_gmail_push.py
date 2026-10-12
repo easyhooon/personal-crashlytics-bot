@@ -79,8 +79,10 @@ class PushTest(unittest.TestCase):
                 'personal-crashlytics-bot-oauth-user',
                 'https://www.googleapis.com/auth/gmail.readonly'), valid)
             run.assert_called_once_with(
-                ['security', 'find-generic-password', '-s', 'personal-crashlytics-bot-oauth-user',
-                 '-a', 'personal-gmail', '-w'],
+                ['/usr/bin/swift', '-module-cache-path',
+                 str(Path(gmail_push.tempfile.gettempdir()) / 'personal-crashlytics-swift-cache'),
+                 str(Path(gmail_push.__file__).with_name('keychain_read.swift')),
+                 'personal-crashlytics-bot-oauth-user'],
                 capture_output=True, text=True)
         for wrong in ({**valid, 'scopes': ['https://www.googleapis.com/auth/cloud-platform']},
                       {**valid, 'refresh_token': ''}, []):

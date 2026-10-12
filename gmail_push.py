@@ -214,8 +214,9 @@ def on_pubsub_message(receiver, message):
 
 def keychain_oauth_info(service, scope):
     result = subprocess.run(
-        ['security', 'find-generic-password', '-s', service,
-         '-a', 'personal-gmail', '-w'],
+        ['/usr/bin/swift', '-module-cache-path',
+         str(Path(tempfile.gettempdir()) / 'personal-crashlytics-swift-cache'),
+         str(Path(__file__).with_name('keychain_read.swift')), service],
         capture_output=True, text=True,
     )
     if result.returncode:
