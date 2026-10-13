@@ -110,6 +110,23 @@ class PublishTest(unittest.TestCase):
             run.assert_not_called()
             self.assertFalse(gh.posts)
 
+    def test_existing_non_draft_pr_requires_manual_reconciliation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gh = FakeGitHub()
+            gh.prs.append({'html_url': 'https://example.test/pr', 'draft': False,
+                           'base': {'ref': 'develop'}, 'head': {'ref': 'YB-00/#561'},
+                           'body': '<!-- personal-crashlytics-repair:' + ALERT['issue_id'] + ' -->'})
+            template = Path(temp) / '.github' / 'PULL_REQUEST_TEMPLATE.md'
+            template.parent.mkdir()
+            template.write_text(TEMPLATE)
+            with patch('repair_publish.git', side_effect=fake_git), \
+                    patch('repair_publish.subprocess.run') as run:
+                with self.assertRaises(ValueError):
+                    publish('yeobee', ALERT, 561, temp, EVIDENCE, gh=gh,
+                            reviewer='LeeOhHyung')
+            self.assertFalse(any(call.args[0][:2] == ['git', 'push']
+                                 for call in run.call_args_list))
+
     def test_yeobee_reviewer_gate_precedes_remote_write(self):
         with tempfile.TemporaryDirectory() as temp:
             with patch('repair_publish.subprocess.run') as run:

@@ -91,7 +91,9 @@ def publish(name, alert, issue_number, checkout, evidence, gh=None, reviewer=Non
 
     prs = matching_prs()
     if prs:
-        if len(prs) != 1 or prs[0].get('base', {}).get('ref') != base or marker not in (prs[0].get('body') or ''):
+        if (len(prs) != 1 or not prs[0].get('draft')
+                or prs[0].get('base', {}).get('ref') != base
+                or marker not in (prs[0].get('body') or '')):
             raise ValueError('Existing PR identity mismatch')
         return {'status': 'existing-draft-pr', 'pr_url': prs[0]['html_url']}
     push = subprocess.run(['git', 'push', 'origin', f'HEAD:refs/heads/{branch}'], cwd=checkout,

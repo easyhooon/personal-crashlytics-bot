@@ -152,6 +152,17 @@ class ExecutorTest(unittest.TestCase):
                                   event, proposal, runner=fixture_runner)
             self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '1')
 
+    def test_external_stack_cannot_become_app_fix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            proposal = fixture(temp)
+            event = ('java.lang.IllegalStateException: WebView failure\n'
+                     'at android.webkit.WebView.loadUrl (WebView.java:42)')
+            with self.assertRaisesRegex(ValueError, 'app-owned frame'):
+                verify_and_commit('yeobee', ALERT, 561, temp,
+                                  {'sampleEvent': 'sample-event', 'title': 'IllegalStateException'},
+                                  event, proposal, runner=fixture_runner)
+            self.assertEqual(command(temp, 'status', '--porcelain'), '')
+
     def test_repair_queue_deduplicates_exact_github_issue(self):
         with tempfile.TemporaryDirectory() as temp:
             state_file = mail_receiver.prepare_state(Path(temp) / 'state.sqlite')
