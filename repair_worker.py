@@ -1,0 +1,99 @@
+"""Drain durable repair jobs after a Gmail notification; no periodic scan."""
+
+import argparse
+import fcntl
+import json
+from pathlib import Path
+import sqlite3
+import time
+
+import bot
+import mail_receiver
+from repair_executor import execute
+
+
+MAX_ATTEMPTS = 3
+RETRY_SECONDS = 3600
+
+
+def config_paths(config_path):
+    path = Path(config_path).resolve(strict=True)
+    if path.stat().st_mode & 0o077:
+        raise ValueError('Repair config must be owner-only')
+    config = json.loads(path.read_text())
+    required = {'yeobee_checkout', 'bandalart_checkout', 'work_root'}
+    if set(config) not in (required, required | {'yeobee_reviewer'}):
+        raise ValueError('Repair config has unexpected keys')
+    paths = {key: Path(config[key]).resolve(strict=True) for key in required}
+    if not all(path.is_dir() for path in paths.values()):
+        raise ValueError('Repair checkout or work root missing')
+    if 'yeobee_reviewer' in config:
+        if config['yeobee_reviewer'] != 'LeeOhHyung':
+            raise ValueError('Unexpected YeoBee reviewer')
+        paths['yeobee_reviewer'] = config['yeobee_reviewer']
+    return paths
+
+
+def claim_next(state_file):
+    now = int(time.time())
+    with sqlite3.connect(state_file, timeout=30) as state:
+        state.execute('BEGIN IMMEDIATE')
+        # A dead worker releases the file lock; its running job is eligible again.
+        state.execute('UPDATE repair_jobs SET state="failed", retry_after=0 WHERE state="running"')
+        row = state.execute('SELECT marker, alert_json, issue_number, attempts FROM repair_jobs '
+                            'WHERE state IN ("queued", "failed") AND attempts < ? AND retry_after <= ? '
+                            'ORDER BY rowid LIMIT 1', (MAX_ATTEMPTS, now)).fetchone()
+        if row:
+            state.execute('UPDATE repair_jobs SET state="running", attempts=attempts+1 '
+                          'WHERE marker=?', (row[0],))
+        return row
+
+
+def finish(state_file, marker, success):
+    with sqlite3.connect(state_file, timeout=30) as state:
+        if success:
+            state.execute('UPDATE repair_jobs SET state="done", retry_after=0 WHERE marker=?', (marker,))
+        else:
+            state.execute('UPDATE repair_jobs SET state="failed", retry_after=? WHERE marker=?',
+                          (int(time.time()) + RETRY_SECONDS, marker))
+
+
+def drain(state_file, config_path, executor=execute):
+    state_file = mail_receiver.prepare_state(state_file)
+    config = config_paths(config_path)
+    lock_path = state_file.with_suffix('.repair.lock')
+    lock_path.touch(mode=0o600, exist_ok=True)
+    lock_path.chmod(0o600)
+    completed = failed = 0
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        while row := claim_next(state_file):
+            marker, serialized, issue_number, _ = row
+            try:
+                alert = json.loads(serialized)
+                name = bot.validate(alert)[0]
+                if name == 'yeobee' and 'yeobee_reviewer' in config:
+                    executor(alert, issue_number, config[name + '_checkout'], config['work_root'],
+                             reviewer=config['yeobee_reviewer'])
+                else:
+                    executor(alert, issue_number, config[name + '_checkout'], config['work_root'])
+            except Exception as error:
+                finish(state_file, marker, False)
+                failed += 1
+                print(json.dumps({'repair_job': 'failed', 'error': type(error).__name__}), flush=True)
+            else:
+                finish(state_file, marker, True)
+                completed += 1
+    return {'completed': completed, 'failed': failed}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--state', type=Path, required=True)
+    parser.add_argument('--config', type=Path, required=True)
+    args = parser.parse_args()
+    print(json.dumps(drain(args.state, args.config)))
+
+
+if __name__ == '__main__':
+    main()

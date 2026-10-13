@@ -40,6 +40,13 @@ def analysis_body(alert, kind):
                 '제조사·OS·WebView·외부 의존성의 영향도 조사 대상입니다.\n\n'
                 '### 다음 단계\n'
                 '- 앱 소유 stack, 재현 조건, 실패하는 회귀 테스트와 수정 후 실제 프로젝트 검증이 확보되기 전에는 수정 PR을 만들지 않습니다.')
+    elif kind == 'verification-failed':
+        note = ('검증을 마치지 못해 수정 PR을 만들지 않았습니다.\n\n'
+                '### 확인된 사실\n'
+                '- Firebase 이슈와 샘플 이벤트는 조회했습니다.\n'
+                '- 수정 전 실패·수정 후 성공하는 회귀 테스트와 실제 프로젝트 검사 중 필요한 조건을 모두 확인하지 못했습니다.\n\n'
+                '### 가설과 추가 정보\n'
+                '- 앱 코드 원인과 수정 효과는 미확정입니다. 빌드 환경, 재현 조건과 실패한 검사 결과를 검토해야 합니다.')
     else:
         raise ValueError('unknown analysis classification')
     return marker + '\n' + note
