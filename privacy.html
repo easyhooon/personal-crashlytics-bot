@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>개인정보처리방침 | Personal Crashlytics Bot</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><nav aria-label="문서"><a href="index.html">소개</a><a href="privacy.html">개인정보처리방침</a><a href="terms.html">이용 안내</a></nav></header>
+  <main>
+    <h1>개인정보처리방침</h1>
+    <p>시행일: 2026년 10월 13일</p>
+    <p>Personal Crashlytics Bot은 개인 운영자의 Gmail에 도착한 여비·반다라트 Firebase Crashlytics 알림을 GitHub 이슈와 연결합니다. 이 문서는 현재 저장소 코드와 확인된 운영 경로를 설명합니다.</p>
+    <h2>접근하는 Google 데이터</h2>
+    <ul>
+      <li>Gmail OAuth 권한은 <code>gmail.readonly</code>입니다. Pub/Sub 수신에는 별도의 <code>pubsub</code> OAuth 권한을 사용합니다. 두 사용자 자격증명과 갱신 토큰은 운영 Mac의 로그인 Keychain 항목으로 읽습니다.</li>
+      <li>Gmail watch 알림은 메일 본문 대신 계정 주소와 history ID를 Pub/Sub에 전달합니다. 수신기는 Gmail 기록에서 추가된 메시지 ID를 확인하고, 해당 메시지의 발신 주소 메타데이터를 먼저 읽습니다. Firebase 발신 후보에 대해서만 전체 메일을 읽어 발신 인증과 Crashlytics 링크를 검사합니다.</li>
+      <li>기존 시간별 누락 복구는 Firebase 발신자와 앱 문자열로 Gmail을 검색합니다. 이 경로에서는 검색 후보의 전체 메시지가 처리용 임시 파일을 거칠 수 있습니다.</li>
+    </ul>
+    <h2>사용 목적과 GitHub 전달</h2>
+    <p>코드는 Firebase 발신 주소와 DKIM·DMARC 결과를 확인하고, 지정된 두 앱의 Firebase 콘솔 Crashlytics 링크에서 프로젝트·앱·이슈 식별자를 추출합니다. 대상 GitHub 저장소의 이슈 제목과 본문에는 앱 식별 정보, Crashlytics 이슈 식별자, Firebase 콘솔 링크, 알려진 릴리스 정보 및 중복 방지 표식이 게시될 수 있습니다. 이슈를 찾거나 갱신하기 위해 기존 GitHub 이슈도 조회합니다. 메일 원문이나 stack trace를 GitHub 이슈 본문으로 그대로 옮기는 기능은 현재 코드에 없습니다.</p>
+    <p>현재 여비 대상 GitHub 저장소는 비공개이고 반다라트 대상 저장소는 공개입니다. 반다라트 이슈에 게시되는 위 기술 정보와 Firebase 콘솔 링크는 공개됩니다. 메일 원문·발신자·사용자 개인정보·인증정보를 이슈에 게시하는 기능은 없습니다. 저장소 공개 설정은 나중에 바뀔 수 있습니다. 별도 수동 연결 시험에서 생성할 수 있는 Draft PR도 대상 저장소의 가시성을 따릅니다. 실제 크래시 처리는 자동 PR을 만들지 않습니다.</p>
+    <p>상주 Gmail·Pub/Sub 수신기의 메일 분류와 이슈 작성 코드는 규칙 기반이며 외부 AI API를 호출하지 않습니다. 현재 시간별 누락 복구는 Codex 자동화가 Gmail 연결에서 받은 검색 후보의 메시지 객체를 처리합니다. 이 복구 작업은 실제 Firebase 메일의 이벤트 수신과 이슈 반영을 검증할 때까지 유지합니다.</p>
+    <h2>로컬 저장과 보관</h2>
+    <p>운영 Mac의 소유자 전용 SQLite 파일에는 대상과 비대상 Gmail 메시지 ID·처리 시각, 처리 대기 ID, 이슈 생성 표식, Gmail 기록 위치와 watch 만료 시각이 저장됩니다. 별도 비공개 설정 파일에는 Gmail 연결·프로필 식별 정보와 검색 위치 등이 들어갑니다. 시간별 복구는 검색 후보의 전체 메시지를 접근 제한된 임시 파일로 전달합니다. 예약은 성공·실패 시 파일 삭제를 지시하지만 처리 스크립트는 삭제를 직접 강제하지 않습니다. SQLite 상태와 GitHub에 게시된 이슈·PR에는 자동 삭제 기한이 구현되어 있지 않습니다.</p>
+    <p>Google Cloud Pub/Sub 주제와 pull 구독이 알림을 전달합니다. 현재 구독은 확인되지 않은 메시지를 기본 7일 동안 보관하고, ACK된 메시지는 보관하지 않습니다. Google, Pub/Sub, GitHub 각각의 서비스 처리와 보관에는 해당 제공자의 정책도 적용됩니다.</p>
+    <h2>문의 및 변경</h2>
+    <p>공개 문의는 <a href="https://github.com/easyhooon/personal-crashlytics-bot/issues">저장소 이슈</a>를 이용하세요. 공개 이슈에 메일 내용, 개인 정보 또는 토큰을 게시하지 마세요. 운영 방식이나 데이터 흐름이 바뀌면 이 문서도 검토·수정합니다.</p>
+  </main>
+  <footer><nav aria-label="하단 문서"><a href="index.html">소개</a><a href="terms.html">이용 안내</a></nav></footer>
+</body>
+</html>

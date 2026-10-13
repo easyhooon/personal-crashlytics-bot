@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personal Crashlytics Bot</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <nav aria-label="문서"><a href="index.html">소개</a><a href="privacy.html">개인정보처리방침</a><a href="terms.html">이용 안내</a></nav>
+  </header>
+  <main>
+    <h1>Personal Crashlytics Bot</h1>
+    <p>개인 운영자가 여비와 반다라트 Android 앱의 Firebase Crashlytics 이메일 알림을 확인하고, 해당 GitHub 저장소의 이슈를 생성하거나 갱신하는 도구입니다. 앱 사용자가 설치하거나 로그인하는 별도 웹 서비스는 아닙니다.</p>
+    <h2>하는 일</h2>
+    <ol>
+      <li>운영자의 Gmail에 도착한 새 메일 알림을 Gmail watch와 Cloud Pub/Sub로 받습니다. 누락 복구를 위해 기존 시간별 Gmail 검색도 운영합니다.</li>
+      <li>Firebase 발신 주소와 메일 인증 결과를 확인하고, 두 앱에 해당하는 Crashlytics 이슈 링크를 추출합니다.</li>
+      <li>대상 GitHub 저장소에서 같은 이슈를 찾아 생성 또는 갱신합니다. GitHub 이슈에는 앱·Crashlytics 이슈 식별자·Firebase 콘솔 링크·알려진 릴리스 정보가 들어갈 수 있습니다.</li>
+    </ol>
+    <p>현재 자동화 범위는 이슈 생성·갱신입니다. 크래시 원인 분석, 코드 수정, 수정 PR 작성은 자동 수행하지 않습니다. 별도 명령의 합성 연결 시험은 검토용 이슈와 Draft PR을 만들 수 있습니다.</p>
+    <p>Gmail과 Pub/Sub 접근 권한, 저장 정보, GitHub 공개 가능 범위는 <a href="privacy.html">개인정보처리방침</a>에 설명했습니다. 사용 범위는 <a href="terms.html">이용 안내</a>에 있습니다.</p>
+    <h2>문의</h2>
+    <p>도구와 공개 문서에 관한 문의는 <a href="https://github.com/easyhooon/personal-crashlytics-bot/issues">저장소 이슈</a>로 남길 수 있습니다. 공개 이슈에 Gmail 내용이나 자격증명을 올리지 마세요.</p>
+  </main>
+  <footer><nav aria-label="하단 문서"><a href="privacy.html">개인정보처리방침</a><a href="terms.html">이용 안내</a></nav></footer>
+</body>
+</html>
