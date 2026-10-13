@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import bot
-from repair_publish import publish
+from repair_publish import body_for, publish
 
 
 ALERT = {'project_id': bot.TARGETS['yeobee'][0], 'app_id': bot.TARGETS['yeobee'][1],
@@ -80,9 +80,24 @@ class PublishTest(unittest.TestCase):
             self.assertEqual(len(gh.posts), 1)
             self.assertIn('--draft', gh.posts[0])
             self.assertIn('--reviewer', gh.posts[0])
+            self.assertEqual(gh.posts[0][gh.posts[0].index('--title') + 1],
+                             '[YB-00] fix: Crashlytics aaaaaaaaaaaa')
             self.assertIn('수정 전 실패', gh.prs[0]['body'])
             self.assertEqual(sum(1 for call in run.call_args_list
                                  if call.args[0][:2] == ['git', 'push']), 1)
+
+    def test_pr_body_preserves_template_sections_and_comments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            template = Path(temp) / '.github' / 'PULL_REQUEST_TEMPLATE.md'
+            template.parent.mkdir()
+            template.write_text('<!-- keep this instruction -->\n' + TEMPLATE)
+            body = body_for('yeobee', temp, 561, ALERT, EVIDENCE)
+            self.assertIn('<!-- keep this instruction -->', body)
+            for heading in ('## 🔗 관련 이슈', '## 📙 작업 설명',
+                            '## 🧪 테스트 내역', '## 📸 스크린샷'):
+                self.assertIn(heading, body)
+            self.assertIn('- Close #561', body)
+            self.assertNotIn('\n-\n\n## 🧪', body)
 
     def test_wrong_commit_stops_before_remote_write(self):
         with tempfile.TemporaryDirectory() as temp:

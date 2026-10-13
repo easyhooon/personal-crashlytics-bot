@@ -72,6 +72,8 @@ def execute(alert, issue_number, checkout, work_root, *, mcp_factory=FirebaseMcp
     if candidate['decision'] != 'propose_fix':
         note = post_analysis(gh, alert, issue_number, 'needs-investigation')
         return {'status': 'issue-only-insufficient-evidence', 'analysis': note['status']}
+    if name == 'yeobee' and reviewer != 'LeeOhHyung':
+        raise PermissionError('YeoBee reviewer approval is required before repair publication')
     worktree = prepare_worktree(name, checkout, work_root, issue_number)
     try:
         evidence = verifier(name, alert, issue_number, worktree, issue, event_text, candidate)

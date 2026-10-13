@@ -7,11 +7,12 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+import os
 
 import bot
 import mail_receiver
 from repair_executor import execute
-from repair_project import app_frame_paths, verify_and_commit
+from repair_project import app_frame_paths, run, verify_and_commit
 
 
 ALERT = {'project_id': bot.TARGETS['yeobee'][0], 'app_id': bot.TARGETS['yeobee'][1],
@@ -23,6 +24,10 @@ TEST = 'module/src/test/kotlin/com/yeobee/FooTest.kt'
 def command(path, *args):
     result = subprocess.run(['git', *args], cwd=path, capture_output=True, text=True, check=True)
     return result.stdout.strip()
+
+
+def fixture_runner(args, checkout, name=None):
+    return subprocess.run(args, cwd=checkout, capture_output=True, timeout=30).returncode
 
 
 def fixture(path):
@@ -103,6 +108,17 @@ class FakeGitHub:
 
 
 class ExecutorTest(unittest.TestCase):
+    def test_default_runner_requires_network_disabled_codex_sandbox(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def fake_run(command, **kwargs):
+                self.assertEqual(command[:5], ['codex', 'sandbox', '-P', 'repair-tests', '-C'])
+                self.assertIn('--sandbox-state-disable-network', command)
+                self.assertNotIn('GH_TOKEN', kwargs['env'])
+                return subprocess.CompletedProcess(command, 1)
+            with patch('repair_project.subprocess.run', side_effect=fake_run), \
+                    patch.dict(os.environ, {'GH_TOKEN': 'fixture-secret'}):
+                self.assertEqual(run(['./gradlew', 'test'], temp, name='yeobee'), 1)
+
     def test_fixture_observes_new_test_fail_then_pass_and_project_check(self):
         with tempfile.TemporaryDirectory() as temp:
             proposal = fixture(temp)
@@ -110,7 +126,7 @@ class ExecutorTest(unittest.TestCase):
             self.assertEqual(app_frame_paths('yeobee', event, Path(temp)), [ROOT])
             result = verify_and_commit('yeobee', ALERT, 561, temp,
                                        {'sampleEvent': 'sample-event', 'title': 'IllegalStateException'},
-                                       event, proposal)
+                                       event, proposal, runner=fixture_runner)
             self.assertEqual(result['verification']['regression_before_exit'], 1)
             self.assertEqual(result['verification']['regression_after_exit'], 0)
             self.assertEqual(result['verification']['project_check_exit'], 0)
@@ -133,7 +149,7 @@ class ExecutorTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 verify_and_commit('yeobee', ALERT, 561, temp,
                                   {'sampleEvent': 'sample-event', 'title': 'NullPointerException'},
-                                  event, proposal)
+                                  event, proposal, runner=fixture_runner)
             self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '1')
 
     def test_repair_queue_deduplicates_exact_github_issue(self):
@@ -173,9 +189,11 @@ class ExecutorTest(unittest.TestCase):
             with patch('repair_executor.prepare_worktree', side_effect=worktree):
                 with self.assertRaises(RuntimeError):
                     execute(ALERT, 561, source, root, mcp_factory=NormalMcp,
-                            proposer=proposal, verifier=verifier, publisher=publisher, gh=gh)
+                            proposer=proposal, verifier=verifier, publisher=publisher, gh=gh,
+                            reviewer='LeeOhHyung')
                 result = execute(ALERT, 561, source, root, mcp_factory=NormalMcp,
-                                 proposer=proposal, verifier=verifier, publisher=publisher, gh=gh)
+                                 proposer=proposal, verifier=verifier, publisher=publisher, gh=gh,
+                                 reviewer='LeeOhHyung')
             self.assertEqual(result['status'], 'existing-draft-pr')
             self.assertEqual(calls, {'proposal': 1, 'verification': 1, 'publish': 2})
             self.assertFalse((root / '.yeobee-561.evidence.json').stat().st_mode & 0o077)

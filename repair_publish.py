@@ -1,7 +1,6 @@
 """Publish a verified one-commit app fix as a Draft PR, never merge it."""
 
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 
@@ -36,18 +35,16 @@ def body_for(name, checkout, issue_number, alert, evidence):
     summary = (f'Crashlytics 이슈 `{alert["issue_id"]}`의 앱 코드 원인을 `{root}`에서 수정했습니다.\n\n'
                f'확인된 근거: Firebase 샘플 이벤트의 앱 소유 stack 프레임과 `{root}`가 일치합니다. '
                '새 회귀 테스트가 수정 전 실패했고 수정 후 통과했습니다.\n\n')
-    description = ('## 📙 작업 설명\n\n'
-                   f'- 원인 파일: `{root}`\n- 새 회귀 테스트: `{test_class}`\n')
-    template = template.replace('## 📙 작업 설명', description, 1)
-    template = template.replace('\n-\n\n## 🧪', '\n\n## 🧪', 1)
+    description = (f'- 원인 파일: `{root}`\n- 새 회귀 테스트: `{test_class}`')
+    if '\n-\n\n## 🧪' not in template:
+        raise ValueError('Target PR template description placeholder changed')
+    template = template.replace('\n-\n\n## 🧪', '\n' + description + '\n\n## 🧪', 1)
     checks = ' '.join(PROJECT_CHECKS[name])
     template = template.replace('## 🧪 테스트 내역 (선택)',
         '## 🧪 테스트 내역 (선택)\n\n'
         f'- `{test_class}`: 수정 전 실패, 수정 후 통과\n'
         f'- `{checks}`: 통과 (`{head[:12]}`)\n'
         '- 기기 재현과 배포 후 Crashlytics 재발 여부: 미검증', 1)
-    template = re.sub(r'\|  기능   \|.*?(?=\n## |\Z)',
-                      'UI 변경 없음.\n', template, count=1, flags=re.DOTALL)
     return summary + template.rstrip() + '\n\n' + marker + '\n'
 
 
@@ -105,8 +102,10 @@ def publish(name, alert, issue_number, checkout, evidence, gh=None, reviewer=Non
                                      delete=True) as content:
         content.write(body)
         content.flush()
+        title = (f'[YB-00] fix: Crashlytics {alert["issue_id"][:12]}' if name == 'yeobee'
+                 else f'fix: Crashlytics {alert["issue_id"][:12]}')
         command = ['gh', 'pr', 'create', '--repo', repo, '--draft', '--base', base,
-                   '--head', branch, '--title', f'fix: Crashlytics {alert["issue_id"][:12]}',
+                   '--head', branch, '--title', title,
                    '--body-file', content.name, '--assignee', '@me', '--label', label]
         if reviewer:
             command += ['--reviewer', reviewer]

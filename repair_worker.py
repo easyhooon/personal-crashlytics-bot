@@ -21,12 +21,16 @@ def config_paths(config_path):
     if path.stat().st_mode & 0o077:
         raise ValueError('Repair config must be owner-only')
     config = json.loads(path.read_text())
-    required = {'yeobee_checkout', 'bandalart_checkout', 'work_root'}
+    required = {'yeobee_checkout', 'bandalart_checkout', 'work_root', 'start_epoch'}
     if set(config) not in (required, required | {'yeobee_reviewer'}):
         raise ValueError('Repair config has unexpected keys')
-    paths = {key: Path(config[key]).resolve(strict=True) for key in required}
+    paths = {key: Path(config[key]).resolve(strict=True) for key in required - {'start_epoch'}}
     if not all(path.is_dir() for path in paths.values()):
         raise ValueError('Repair checkout or work root missing')
+    if (not isinstance(config['start_epoch'], int) or isinstance(config['start_epoch'], bool)
+            or config['start_epoch'] <= 0 or config['start_epoch'] > int(time.time())):
+        raise ValueError('Invalid repair activation epoch')
+    paths['start_epoch'] = config['start_epoch']
     if 'yeobee_reviewer' in config:
         if config['yeobee_reviewer'] != 'LeeOhHyung':
             raise ValueError('Unexpected YeoBee reviewer')
@@ -34,7 +38,7 @@ def config_paths(config_path):
     return paths
 
 
-def claim_next(state_file):
+def claim_next(state_file, start_epoch):
     now = int(time.time())
     with sqlite3.connect(state_file, timeout=30) as state:
         state.execute('BEGIN IMMEDIATE')
@@ -42,7 +46,8 @@ def claim_next(state_file):
         state.execute('UPDATE repair_jobs SET state="failed", retry_after=0 WHERE state="running"')
         row = state.execute('SELECT marker, alert_json, issue_number, attempts FROM repair_jobs '
                             'WHERE state IN ("queued", "failed") AND attempts < ? AND retry_after <= ? '
-                            'ORDER BY rowid LIMIT 1', (MAX_ATTEMPTS, now)).fetchone()
+                            'AND created_at >= ? ORDER BY rowid LIMIT 1',
+                            (MAX_ATTEMPTS, now, start_epoch)).fetchone()
         if row:
             state.execute('UPDATE repair_jobs SET state="running", attempts=attempts+1 '
                           'WHERE marker=?', (row[0],))
@@ -67,7 +72,7 @@ def drain(state_file, config_path, executor=execute):
     completed = failed = 0
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        while row := claim_next(state_file):
+        while row := claim_next(state_file, config['start_epoch']):
             marker, serialized, issue_number, _ = row
             try:
                 alert = json.loads(serialized)

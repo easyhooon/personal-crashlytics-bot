@@ -21,19 +21,19 @@ flowchart TD
     A[Crashlytics 알림] --> B[Gmail watch · Pub/Sub]
     B --> C[발신·앱 검증 / 중복 방지]
     C --> D[대상 저장소 GitHub 이슈]
-    D -. 미연결: 분석 실행기 .-> E[Firebase MCP 이슈·샘플 이벤트 읽기]
+    D -. 선택 기능, 운영 미활성 .-> E[Firebase MCP 이슈·샘플 이벤트 읽기]
     E -.-> F[Codex CLI 읽기 전용 코드·stack 분석]
     F -.-> G{앱 코드 원인과 수정 근거 확인?}
     G -. 근거 부족·외부 원인·테스트 크래시 .-> S[확인 사실·가설·추가 정보 기록 후 STOP]
     G -. 확인 .-> H[관련 소스 패치와 실패 회귀 테스트]
     H -.-> I{수정 후 회귀·실제 프로젝트 검사 통과?}
     I -. 실패·검증 불가 .-> S
-    I -. 통과·변경 연관성 확인 .-> J[Draft PR]
+    I -. 통과·변경 연관성 확인 .-> J[권한·중복·base 확인 후 Draft PR]
 ```
 
-실선은 현재 운영 중인 이슈 생성 경로다. 점선은 운영 수신기에 아직 연결되지 않은 분석·수정 경로다. 현재 LLM 검증은 여비 테스트 이슈 한 건에 대해 `codex exec`의 읽기 전용 sandbox와 Firebase CLI MCP의 이슈·이벤트 읽기 도구만 사용했다. 결과는 셸 주입 크래시의 `issue_only`였고 PR은 만들지 않았다. 자동 코드 수정·테스트·Draft PR 실행기는 아직 없다.
+실선은 현재 운영 중인 이슈 생성 경로다. 점선은 코드에 구현했지만 운영 수신기에 활성화하지 않은 분석·수정 경로다. `--repair-config`를 명시하면 새 이슈를 SQLite 작업 큐에 넣고 Pub/Sub ACK 뒤 별도 worker를 깨운다. 기존 메일 수신·ACK는 분석 실패와 분리된다. worker는 시작 시에도 미완료 작업을 재개하지만, 1시간 재시도 시각만으로 실행되는 별도 예약은 없다. 현재 서비스와 복구 예약에는 이 옵션이 없다. 실제 자동 Draft PR은 아직 검증되지 않았다.
 
-읽기 전용 실험의 LLM 입력은 허용된 Android 앱 ID와 Crashlytics 이슈 ID로 한정했고, 여비 `develop` checkout의 코드와 Firebase CLI MCP의 샘플 이벤트를 읽었다. 이벤트에 포함될 수 있는 로그·breadcrumb는 비공개 데이터로 취급한다. Gmail 원문, 토큰, 개인 주소는 프롬프트나 GitHub 이슈에 전달하지 않는다. `codex exec --sandbox read-only`의 구조화 출력 schema에서 `issue_only` 결과를 확인했다. GitHub 쓰기 경로는 별도로 `easyhooon` 계정과 `TARGETS`의 두 저장소를 확인한다. [수정 판단 함수](repair_policy.py)는 앱 소유 stack, 원인과 변경 파일의 직접 연관성, 수정 전 실패·수정 후 통과한 회귀 테스트, 실제 프로젝트 검사와 commit SHA를 요구하지만 아직 운영 실행기에서 호출하지 않는다. 제조사 한정이라는 이유만으로 배제하지 않으며 근거가 없거나 외부 원인·검증 실패면 이슈에 남기고 멈춘다. 상세 경계는 [수정 판단 문서](docs/REPAIR_EVIDENCE_GATE.md)에 있다.
+Codex의 입력은 허용된 Android 앱 ID와 Crashlytics 이슈 ID, 대상 checkout으로 제한한다. Firebase CLI MCP에서 이슈와 샘플 이벤트를 읽으며 Gmail 원문·토큰·개인 주소를 프롬프트나 GitHub 이슈에 전달하지 않는다. 모델은 읽기 전용으로 구조화된 원인 설명과 두 패치만 제안한다. 별도 실행기가 앱 소유 stack과 수정 파일·라인을 대조하고, 새 회귀 테스트의 수정 전 실패·수정 후 통과 및 실제 프로젝트 검사를 확인한다. 테스트 코드는 네트워크가 차단된 `repair-tests` Codex sandbox에서만 실행하도록 했으나 **해당 권한 프로필이 아직 설치·검증되지 않아** 실제 자동 수정은 닫혀 있다. GitHub 쓰기는 별도로 `easyhooon`과 두 대상 저장소, 이슈 marker, 리뷰어·라벨, 검증한 commit을 확인한다. 제조사 한정 보고도 앱 코드 근거가 있으면 같은 기준으로 검토한다. 외부 원인·셸 주입·근거 부족·검증 실패에서는 분석 이슈에 남기고 멈춘다. 상세 경계와 검사 결과는 [수정 판단 문서](docs/REPAIR_EVIDENCE_GATE.md)에 있다.
 
 ## 빠른 실행
 

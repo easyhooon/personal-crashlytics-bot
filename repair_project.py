@@ -1,5 +1,7 @@
 """Apply bounded Codex patches and observe a real Gradle regression cycle."""
 
+import hashlib
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -11,20 +13,48 @@ from repair_policy import assess, safe_path
 
 
 PROJECT_CHECKS = {
-    'yeobee': ['./gradlew', 'spotlessCheck', 'detekt', ':app:assembleDebug'],
+    'yeobee': ['./gradlew', 'ktlintCheck', 'detekt', ':app:assembleDebug'],
     'bandalart': ['./gradlew', 'spotlessCheck', 'detekt', 'allTests',
                   ':androidApp:testDebugUnitTest', ':androidApp:assembleDebug'],
 }
 
 
-def run(command, checkout, timeout=1800):
+def run(command, checkout, timeout=1800, name=None):
+    """Run generated test code only in an approved, network-disabled sandbox."""
+    checkout = Path(checkout).resolve(strict=True)
+    env = {key: value for key, value in os.environ.items() if key not in {
+        'GH_TOKEN', 'GITHUB_TOKEN', 'FIREBASE_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS',
+        'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_HOME',
+    }}
+    sdk = Path.home() / 'Library' / 'Android' / 'sdk'
+    if sdk.is_dir():
+        env['ANDROID_HOME'] = str(sdk)
+        env['ANDROID_SDK_ROOT'] = str(sdk)
+    dummy = checkout / 'keystore.properties'
+    if name == 'bandalart':
+        if dummy.exists():
+            raise ValueError('Repair worktree contains an unexpected signing config')
+        dummy.write_text('STORE_FILE=/dev/null\nSTORE_PASSWORD=unused-debug-only\n'
+                         'KEY_ALIAS=unused-debug-only\nKEY_PASSWORD=unused-debug-only\n')
+        dummy.chmod(0o600)
     with tempfile.TemporaryFile(mode='w+') as output:
         try:
-            completed = subprocess.run(command, cwd=checkout, stdout=output, stderr=subprocess.STDOUT,
-                                       timeout=timeout, check=False)
+            completed = subprocess.run(['codex', 'sandbox', '-P', 'repair-tests', '-C', str(checkout),
+                                        '--sandbox-state-disable-network', *command],
+                                       cwd=checkout, env=env, stdout=output,
+                                       stderr=subprocess.STDOUT, timeout=timeout, check=False)
         except subprocess.TimeoutExpired:
             return 124
+        finally:
+            if name == 'bandalart':
+                dummy.unlink(missing_ok=True)
     return completed.returncode
+
+
+def staged_digest(checkout):
+    result = subprocess.run(['git', 'diff', '--cached', '--binary'], cwd=checkout,
+                            capture_output=True, timeout=60, check=True)
+    return hashlib.sha256(result.stdout).hexdigest()
 
 
 def git(checkout, *arguments):
@@ -152,7 +182,8 @@ def app_frame_paths(name, event_text, checkout):
     return sorted(result)
 
 
-def verify_and_commit(name, alert, issue_number, checkout, issue, event_text, proposal):
+def verify_and_commit(name, alert, issue_number, checkout, issue, event_text, proposal,
+                      runner=run):
     """Return a commit only after a new test fails before and passes after."""
     bot.validate(alert)
     checkout = Path(checkout).resolve(strict=True)
@@ -179,7 +210,10 @@ def verify_and_commit(name, alert, issue_number, checkout, issue, event_text, pr
         raise ValueError('Fix patch is not near the observed app stack line')
     subprocess.run(['git', 'apply', '--index', '-'], input=proposal['regression_patch'],
                    text=True, cwd=checkout, check=True, capture_output=True, timeout=30)
-    before = run(command, checkout)
+    test_digest = staged_digest(checkout)
+    before = runner(command, checkout, name=name)
+    if staged_digest(checkout) != test_digest:
+        raise RuntimeError('Regression execution modified staged code')
     if before == 0 or not matching_regression_failure(checkout, module, task, test_class,
                                                       exception, Path(root).name):
         raise RuntimeError('Regression did not reproduce the observed exception and source')
@@ -188,13 +222,16 @@ def verify_and_commit(name, alert, issue_number, checkout, issue, event_text, pr
     changed = git(checkout, 'diff', '--cached', '--name-only').splitlines()
     if set(changed) != {root, test_file}:
         raise ValueError('Patch changed unexpected files')
-    after = run(command, checkout)
+    fix_digest = staged_digest(checkout)
+    after = runner(command, checkout, name=name)
+    if staged_digest(checkout) != fix_digest:
+        raise RuntimeError('Fix execution modified staged code')
     if after != 0 or report_has_failure(checkout, module, task, test_class):
         raise RuntimeError('Regression did not pass after source fix')
     git(checkout, 'commit', '-m', 'fix: Crashlytics 크래시 수정' if name == 'yeobee'
         else 'fix: repair Crashlytics app crash')
     head = git(checkout, 'rev-parse', 'HEAD')
-    project_exit = run(PROJECT_CHECKS[name], checkout)
+    project_exit = runner(PROJECT_CHECKS[name], checkout, name=name)
     if git(checkout, 'status', '--porcelain'):
         raise RuntimeError('Project check changed checkout files')
     verified = {'regression_before_exit': before, 'regression_after_exit': after,

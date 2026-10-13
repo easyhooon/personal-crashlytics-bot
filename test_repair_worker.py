@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import unittest
 
 import bot
@@ -18,7 +19,8 @@ def setup(temp):
     state = mail_receiver.prepare_state(root / 'state.sqlite')
     config = root / 'repair.json'
     config.write_text(json.dumps({'yeobee_checkout': str(root),
-                                  'bandalart_checkout': str(root), 'work_root': str(root)}))
+                                  'bandalart_checkout': str(root), 'work_root': str(root),
+                                  'start_epoch': int(time.time()) - 10}))
     config.chmod(0o600)
     with sqlite3.connect(state) as connection:
         mail_receiver.enqueue_repair(connection, ALERT, {
@@ -58,6 +60,15 @@ class WorkerTest(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT state FROM repair_jobs').fetchone()[0], 'running')
             self.assertEqual(repair_worker.drain(state, config, executor=lambda *_: None),
                              {'completed': 1, 'failed': 0})
+
+    def test_activation_epoch_excludes_existing_backlog(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state, config = setup(temp)
+            start = json.loads(config.read_text())['start_epoch']
+            with sqlite3.connect(state) as db:
+                db.execute('UPDATE repair_jobs SET created_at=?', (start - 1,))
+            self.assertEqual(repair_worker.drain(state, config, executor=lambda *_: self.fail()),
+                             {'completed': 0, 'failed': 0})
 
 
 if __name__ == '__main__':
