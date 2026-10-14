@@ -48,6 +48,8 @@ def propose(alert, checkout, timeout=900):
         'You cannot run builds or tests here; the executor runs your regression test '
         'before and after the fix on CI and rejects any patch that does not fail then pass. '
         'Do not return no_code_fix only because you could not execute the test yourself. '
+        'causal_explanation must name the exact observed exception class (simple name, '
+        'e.g. NumberFormatException) and the root cause source file name (e.g. Foo.kt). '
         'A manufacturer-specific event can be fixable only with a directly evidenced app '
         'code cause. For a genuine app-owned defect only, provide two unified git diffs: '
         'regression_patch adds exactly one Kotlin JUnit test file that fails on the base, '
