@@ -28,7 +28,7 @@ python3 -B repair_triage.py --alert-file PRIVATE_NORMALIZED_ALERT.json --issue-n
 
 이 워크플로는 여비 [#563](https://github.com/YeoBee-official/YeoBee-Android/pull/563)과 반다라트 [#438](https://github.com/Nexters/BandalArt-KMP/pull/438)로 2026-10-14에 각 기준 브랜치(`develop`, `main`)에 머지됐다. 워크플로가 없는 기준 브랜치에서는 `prepare_worktree`가 worktree를 만들기 전에 멈춘다. 2026-10-14 종단 간 검증: 여비 develop에 debug 전용 결함([#565](https://github.com/YeoBee-official/YeoBee-Android/pull/565))을 넣고 기기에서 크래시를 냈다. `PERSONAL_CRASHLYTICS_TEST_UNTIL`로 개발 앱을 임시 허용하고 `bot.py`를 수동 실행해 이슈 #566을 만들었다(Gmail 수신 단계는 미검증). `repair_executor.py`가 Codex 제안을 받아 커밋 A·B를 만들었고, A는 `NumberFormatException`·`AmountText.kt`로 실패([run](https://github.com/YeoBee-official/YeoBee-Android/actions/runs/38521796724)), B는 통과([run](https://github.com/YeoBee-official/YeoBee-Android/actions/runs/38522868819))했다. B 커밋 `020bcdfc2e8d`가 그대로 Draft PR [#567](https://github.com/YeoBee-official/YeoBee-Android/pull/567)의 HEAD가 됐고 기존 Android CI는 Draft라서 건너뛰었다.
 
-이 과정에서 Codex는 이벤트를 읽은 실행 6번 중 5번 수정을 제안했고 1번은 셸 테스트 가능성을 들어 거부했다. 거부·도구 장애·형식 불일치는 모두 PR 없이 멈췄다. 운영 앱에서 자연 발생한 크래시로는 아직 검증하지 않았다.
+이 과정에서 Codex는 이벤트를 읽은 것이 확인된 실행 8번 중 7번 수정을 제안했고 1번은 셸 테스트 가능성을 들어 거부했다. 거부·도구 장애·형식 불일치는 모두 PR 없이 멈췄다. 운영 앱에서 자연 발생한 크래시로는 아직 검증하지 않았다.
 
 2026-10-13 YeoBee-Dev 셸 주입 검증 이벤트는 Firebase MCP 이슈·샘플 이벤트의 `CrashedByAdbException`을 확인했고 [테스트 이슈 #561](https://github.com/YeoBee-official/YeoBee-Android/issues/561#issuecomment-6138733335)에 no-code-fix 판단을 남겼다. 코드 수정 PR은 만들지 않았다.
 
