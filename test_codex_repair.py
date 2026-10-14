@@ -23,7 +23,7 @@ class CodexProposalTest(unittest.TestCase):
                                     for arg in command))
                 output = Path(command[command.index('-o') + 1])
                 output.write_text(json.dumps({
-                    'decision': 'no_code_fix', 'facts': ['shell crash'], 'hypotheses': [],
+                    'decision': 'no_code_fix', 'evidence_read': True, 'facts': ['shell crash'], 'hypotheses': [],
                     'missing_information': [], 'root_cause_file': '',
                     'causal_explanation': '', 'test_file': '',
                     'regression_patch': '', 'fix_patch': '',
@@ -32,11 +32,27 @@ class CodexProposalTest(unittest.TestCase):
             with patch.object(codex_repair.subprocess, 'run', side_effect=fake_run):
                 self.assertEqual(codex_repair.propose(ALERT, checkout)['decision'], 'no_code_fix')
 
+    def test_unread_evidence_is_retryable_not_insufficient(self):
+        with tempfile.TemporaryDirectory() as checkout:
+            def fake_run(command, **_):
+                self.assertIn('mcp_servers.firebase.startup_timeout_sec=60', command)
+                Path(command[command.index('-o') + 1]).write_text(json.dumps({
+                    'decision': 'no_code_fix', 'evidence_read': False,
+                    'facts': ['Firebase MCP tools are unavailable'], 'hypotheses': [],
+                    'missing_information': [], 'root_cause_file': '',
+                    'causal_explanation': '', 'test_file': '',
+                    'regression_patch': '', 'fix_patch': '',
+                }))
+                return subprocess.CompletedProcess(command, 0)
+            with patch.object(codex_repair.subprocess, 'run', side_effect=fake_run):
+                with self.assertRaisesRegex(RuntimeError, 'could not read'):
+                    codex_repair.propose(ALERT, checkout)
+
     def test_model_no_code_patch_is_rejected(self):
         with tempfile.TemporaryDirectory() as checkout:
             def fake_run(command, **_):
                 Path(command[command.index('-o') + 1]).write_text(json.dumps({
-                    'decision': 'no_code_fix', 'facts': [], 'hypotheses': [],
+                    'decision': 'no_code_fix', 'evidence_read': True, 'facts': [], 'hypotheses': [],
                     'missing_information': [], 'root_cause_file': '',
                     'causal_explanation': '', 'test_file': '',
                     'regression_patch': 'unexpected', 'fix_patch': '',
