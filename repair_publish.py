@@ -63,7 +63,8 @@ def body_for(name, checkout, issue_number, alert, evidence):
 
 def publish(name, alert, issue_number, checkout, evidence, gh=None, reviewer=None):
     _, target, issue_marker, _ = bot.validate(alert)
-    if name not in bot.TARGETS or target != bot.TARGETS[name]:
+    # A debug app alert shares the release app's repository and base.
+    if name not in bot.TARGETS or target[2:] != bot.TARGETS[name][2:]:
         raise ValueError('App/repository mismatch')
     checkout = Path(checkout).resolve(strict=True)
     repo, base = target[2:]

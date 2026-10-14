@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import time
 from urllib.parse import quote, unquote
 
 TARGETS = {
@@ -17,6 +18,30 @@ TARGETS = {
     'bandalart': ('bandalart-e0288', '1:197590766195:android:0e0a78d2390e6849179006', 'Nexters/BandalArt-KMP', 'main'),
 }
 ANDROID_PACKAGES = {'yeobee': 'com.yeobee', 'bandalart': 'com.nexters.bandalart'}
+# Debug app builds report to their own Firebase app. They reuse the same repository
+# flow only while PERSONAL_CRASHLYTICS_TEST_UNTIL (epoch, at most 4 hours ahead) is set.
+DEBUG_APPS = {'yeobee': ('yeobeeios', '1:434182132125:android:497be077d844d0ce631f74', 'com.yeobee.dev')}
+
+
+def debug_apps_enabled():
+    until = os.environ.get('PERSONAL_CRASHLYTICS_TEST_UNTIL', '')
+    if not re.fullmatch(r'[0-9]{10}', until):
+        return False
+    remaining = int(until) - int(time.time())
+    return 0 < remaining <= 4 * 60 * 60
+
+
+def accepted_targets():
+    rows = list(TARGETS.items())
+    if debug_apps_enabled():
+        rows += [(name, (project, app, *TARGETS[name][2:]))
+                 for name, (project, app, _) in DEBUG_APPS.items()]
+    return rows
+
+
+def console_package(name, target):
+    debug = DEBUG_APPS.get(name)
+    return debug[2] if debug and target[1] == debug[1] else ANDROID_PACKAGES[name]
 START, END = '<!-- personal-crashlytics:start -->', '<!-- personal-crashlytics:end -->'
 
 
@@ -53,7 +78,7 @@ def validate(alert):
     keys = {'project_id', 'app_id', 'issue_id', 'release'}
     if set(alert) - keys:
         raise ValueError('Only normalized technical fields are accepted')
-    for name, target in TARGETS.items():
+    for name, target in accepted_targets():
         if (alert.get('project_id'), alert.get('app_id')) == target[:2]:
             break
     else:
@@ -127,7 +152,7 @@ def sync(gh, alert, dry_run=False, create_if_missing=True, before_create=None):
     verify(gh, repo)
     if dry_run:
         return {'repo': repo, 'status': 'validated-no-write'}
-    link = f'https://console.firebase.google.com/project/{target[0]}/crashlytics/app/android:{ANDROID_PACKAGES[name]}/issues/{alert["issue_id"]}'
+    link = f'https://console.firebase.google.com/project/{target[0]}/crashlytics/app/android:{console_package(name, target)}/issues/{alert["issue_id"]}'
     body = body.replace(END, f'Crashlytics: {link}\n{END}')
     title = f'[YB-00] Crashlytics: {alert["issue_id"][:12]}' if name == 'yeobee' else f'[Crashlytics] {name}: {alert["issue_id"][:12]}'
     row, status = issue(gh, repo, marker, title, body, existing_url=link,
