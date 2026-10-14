@@ -26,7 +26,7 @@ python3 -B repair_triage.py --alert-file PRIVATE_NORMALIZED_ALERT.json --issue-n
 - 실패 경로: `IllegalStateException`을 던지는 임시 테스트를 넣은 커밋에서 여비 [run 38501426785](https://github.com/YeoBee-official/YeoBee-Android/actions/runs/38501426785), 반다라트 [run 38502055902](https://github.com/Nexters/BandalArt-KMP/actions/runs/38502055902)가 `failure`로 끝났고, 봇의 `Actions.reports`와 `matching_regression_failure`가 artifact XML에서 예외와 파일명을 찾았다.
 - 반다라트 테스트가 컴파일되지 않은 run([38501432385](https://github.com/Nexters/BandalArt-KMP/actions/runs/38501432385))은 XML에 해당 테스트가 없어 재현으로 인정되지 않았다. 생성 테스트는 대상 소스셋의 기존 테스트 의존성과 detekt·spotless 규칙(반다라트는 라이선스 헤더 포함)을 따라야 한다.
 
-이 워크플로는 여비 [#563](https://github.com/YeoBee-official/YeoBee-Android/pull/563)과 반다라트 [#438](https://github.com/Nexters/BandalArt-KMP/pull/438)에서 리뷰 중이다. 머지 전에는 `prepare_worktree`가 기준 브랜치에 워크플로가 없음을 확인하고 worktree를 만들기 전에 멈춘다. 실제 앱 크래시를 대상으로 한 종단 간 수정 PR은 아직 없다. 어느 앱에서도 실제 앱 소유 결함에 대한 수정 전후 회귀 검증이나 Draft PR 게시를 완료했다고 주장하지 않는다.
+이 워크플로는 여비 [#563](https://github.com/YeoBee-official/YeoBee-Android/pull/563)과 반다라트 [#438](https://github.com/Nexters/BandalArt-KMP/pull/438)로 2026-10-14에 각 기준 브랜치(`develop`, `main`)에 머지됐다. 워크플로가 없는 기준 브랜치에서는 `prepare_worktree`가 worktree를 만들기 전에 멈춘다. 실제 앱 크래시를 대상으로 한 종단 간 수정 PR은 아직 없다. 어느 앱에서도 실제 앱 소유 결함에 대한 수정 전후 회귀 검증이나 Draft PR 게시를 완료했다고 주장하지 않는다.
 
 2026-10-13 YeoBee-Dev 셸 주입 검증 이벤트는 Firebase MCP 이슈·샘플 이벤트의 `CrashedByAdbException`을 확인했고 [테스트 이슈 #561](https://github.com/YeoBee-official/YeoBee-Android/issues/561#issuecomment-6138733335)에 no-code-fix 판단을 남겼다. 코드 수정 PR은 만들지 않았다.
 
