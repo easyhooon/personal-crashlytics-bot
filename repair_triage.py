@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import subprocess
 
 import bot
 from crashlytics_mcp import FirebaseMcp
@@ -85,9 +84,7 @@ def main():
     if args.dry_run:
         result = {'status': 'validated-no-write', 'classification': kind}
     else:
-        # Both target repositories require this actor before GitHub writes.
-        subprocess.run(['gh', 'auth', 'switch', '--hostname', 'github.com', '--user', 'easyhooon'],
-                       capture_output=True, check=True, timeout=30)
+        # bot.GitHub reads the easyhooon token per process; the global gh account is untouched.
         result = post_analysis(bot.GitHub(), alert, args.issue_number, kind)
     print(json.dumps(result, ensure_ascii=False))
 

@@ -12,7 +12,9 @@ ALERT = {'project_id': bot.TARGETS['yeobee'][0], 'app_id': bot.TARGETS['yeobee']
          'issue_id': 'a' * 32}
 HEAD = 'b' * 40
 EVIDENCE = {'head_sha': HEAD, 'root_cause_file': 'module/src/main/Foo.kt',
-            'test_class': 'com.yeobee.FooTest'}
+            'test_class': 'com.yeobee.FooTest',
+            'before_run_url': 'https://example.test/runs/1',
+            'after_run_url': 'https://example.test/runs/2'}
 TEMPLATE = ('## 🔗 관련 이슈\n- Close #\n\n## 📙 작업 설명\n-\n\n'
             '## 🧪 테스트 내역 (선택)\n\n## 📸 스크린샷 또는 시연 영상 (선택)\n')
 
@@ -83,6 +85,9 @@ class PublishTest(unittest.TestCase):
             self.assertEqual(gh.posts[0][gh.posts[0].index('--title') + 1],
                              '[YB-00] fix: Crashlytics aaaaaaaaaaaa')
             self.assertIn('수정 전 실패', gh.prs[0]['body'])
+            self.assertIn('https://example.test/runs/2', gh.prs[0]['body'])
+            self.assertFalse(any(call.args[0][:3] == ['gh', 'auth', 'switch']
+                                 for call in run.call_args_list))
             self.assertEqual(sum(1 for call in run.call_args_list
                                  if call.args[0][:2] == ['git', 'push']), 1)
 

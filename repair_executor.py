@@ -10,8 +10,9 @@ import tempfile
 import bot
 from codex_repair import propose
 from crashlytics_mcp import FirebaseMcp
+from repair_ci import WORKFLOW
 from repair_project import git, verify_and_commit
-from repair_publish import branch_for, publish
+from repair_publish import branch_for, github_client, publish, remotes
 from repair_triage import classify, post_analysis
 
 
@@ -21,13 +22,16 @@ def prepare_worktree(name, checkout, work_root, issue_number):
     work_root = Path(work_root).resolve(strict=True)
     if git(checkout, 'status', '--porcelain'):
         raise ValueError('Source checkout contains local changes')
-    if git(checkout, 'remote', 'get-url', 'origin') not in (
-            f'https://github.com/{repo}.git', f'git@github.com:{repo}.git'):
+    if git(checkout, 'remote', 'get-url', 'origin') not in remotes(repo):
         raise ValueError('Source checkout remote is not the allowed repository')
     fetch = subprocess.run(['git', 'fetch', 'origin', base], cwd=checkout,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
     if fetch.returncode:
         raise RuntimeError('Target base fetch failed')
+    # Without the secret-free verify workflow on the base, no repair can be verified.
+    if subprocess.run(['git', 'cat-file', '-e', f'origin/{base}:{WORKFLOW}'], cwd=checkout,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30).returncode:
+        raise ValueError('Target base lacks the secret-free verify workflow')
     branch = branch_for(name, issue_number)
     destination = work_root / (name + '-' + str(issue_number))
     if destination.exists():
@@ -45,9 +49,7 @@ def execute(alert, issue_number, checkout, work_root, *, mcp_factory=FirebaseMcp
     if not isinstance(issue_number, int) or isinstance(issue_number, bool) or issue_number < 1:
         raise ValueError('Invalid issue number')
     if gh is None:
-        subprocess.run(['gh', 'auth', 'switch', '--hostname', 'github.com', '--user', 'easyhooon'],
-                       capture_output=True, check=True, timeout=30)
-        gh = bot.GitHub()
+        gh = github_client()
     bot.verify(gh, target[2])
     with mcp_factory() as mcp:
         issue, event_text = mcp.fetch(alert)

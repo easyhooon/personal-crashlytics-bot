@@ -1,60 +1,22 @@
-"""Apply bounded Codex patches and observe a real Gradle regression cycle."""
+"""Apply bounded Codex patches and observe the regression cycle on GitHub Actions."""
 
-import hashlib
-import os
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 import xml.etree.ElementTree as ET
 
 import bot
+from repair_ci import WORKFLOW, Actions, verify_branch
 from repair_policy import assess, safe_path
 
 
+# What the target's crash-repair-verify workflow runs; quoted in the PR body.
 PROJECT_CHECKS = {
-    'yeobee': ['./gradlew', 'ktlintCheck', 'detekt', ':app:assembleDebug'],
+    'yeobee': ['./gradlew', 'testDebugUnitTest', 'ktlintCheck', 'detekt', ':app:assembleDebug'],
     'bandalart': ['./gradlew', 'spotlessCheck', 'detekt', 'allTests',
-                  ':androidApp:testDebugUnitTest', ':androidApp:assembleDebug'],
+                  ':androidApp:testDebugUnitTest', ':androidApp:assembleDebug',
+                  '-PspotlessRatchetFrom=origin/main'],
 }
-
-
-def run(command, checkout, timeout=1800, name=None):
-    """Run generated test code only in an approved, network-disabled sandbox."""
-    checkout = Path(checkout).resolve(strict=True)
-    env = {key: value for key, value in os.environ.items() if key not in {
-        'GH_TOKEN', 'GITHUB_TOKEN', 'FIREBASE_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS',
-        'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_HOME',
-    }}
-    sdk = Path.home() / 'Library' / 'Android' / 'sdk'
-    if sdk.is_dir():
-        env['ANDROID_HOME'] = str(sdk)
-        env['ANDROID_SDK_ROOT'] = str(sdk)
-    dummy = checkout / 'keystore.properties'
-    if name == 'bandalart':
-        if dummy.exists():
-            raise ValueError('Repair worktree contains an unexpected signing config')
-        dummy.write_text('STORE_FILE=/dev/null\nSTORE_PASSWORD=unused-debug-only\n'
-                         'KEY_ALIAS=unused-debug-only\nKEY_PASSWORD=unused-debug-only\n')
-        dummy.chmod(0o600)
-    with tempfile.TemporaryFile(mode='w+') as output:
-        try:
-            completed = subprocess.run(['codex', 'sandbox', '-P', 'repair-tests', '-C', str(checkout),
-                                        '--sandbox-state-disable-network', *command],
-                                       cwd=checkout, env=env, stdout=output,
-                                       stderr=subprocess.STDOUT, timeout=timeout, check=False)
-        except subprocess.TimeoutExpired:
-            return 124
-        finally:
-            if name == 'bandalart':
-                dummy.unlink(missing_ok=True)
-    return completed.returncode
-
-
-def staged_digest(checkout):
-    result = subprocess.run(['git', 'diff', '--cached', '--binary'], cwd=checkout,
-                            capture_output=True, timeout=60, check=True)
-    return hashlib.sha256(result.stdout).hexdigest()
 
 
 def git(checkout, *arguments):
@@ -103,9 +65,9 @@ def test_contract(name, test_file):
     if name == 'yeobee' and source.startswith('test/kotlin/'):
         task = 'testDebugUnitTest'
         class_path = source[len('test/kotlin/'):]
-    elif name == 'bandalart' and source.startswith('commonTest/kotlin/'):
+    elif name == 'bandalart' and source.startswith(('commonTest/kotlin/', 'androidHostTest/kotlin/')):
         task = 'testAndroidHostTest'
-        class_path = source[len('commonTest/kotlin/'):]
+        class_path = source.split('/kotlin/', 1)[1]
     elif name == 'bandalart' and module == 'androidApp' and source.startswith('test/kotlin/'):
         task = 'testDebugUnitTest'
         class_path = source[len('test/kotlin/'):]
@@ -116,35 +78,30 @@ def test_contract(name, test_file):
     return ['./gradlew', gradle_task, '--tests', test_class], module, task, test_class
 
 
-def report_has_failure(checkout, module, task, test_class):
-    reports = (Path(checkout) / module / 'build' / 'test-results' / task).glob('**/*.xml')
-    for path in reports:
+def test_cases(reports, test_class):
+    for report in reports:
         try:
-            tree = ET.parse(path)
+            tree = ET.fromstring(report)
         except ET.ParseError:
             continue
         for case in tree.iter('testcase'):
-            if case.get('classname') == test_class and (case.find('failure') is not None
-                                                       or case.find('error') is not None):
+            if case.get('classname') == test_class:
+                yield case
+
+
+def regression_passed(reports, test_class):
+    cases = list(test_cases(reports, test_class))
+    return bool(cases) and all(case.find('failure') is None and case.find('error') is None
+                               and case.find('skipped') is None for case in cases)
+
+
+def matching_regression_failure(reports, test_class, exception, source_file):
+    for case in test_cases(reports, test_class):
+        for failure in list(case.findall('failure')) + list(case.findall('error')):
+            detail = ' '.join((failure.get('type', ''), failure.get('message', ''),
+                               failure.text or ''))
+            if exception in detail and source_file in detail:
                 return True
-    return False
-
-
-def matching_regression_failure(checkout, module, task, test_class, exception, source_file):
-    reports = (Path(checkout) / module / 'build' / 'test-results' / task).glob('**/*.xml')
-    for path in reports:
-        try:
-            tree = ET.parse(path)
-        except ET.ParseError:
-            continue
-        for case in tree.iter('testcase'):
-            if case.get('classname') != test_class:
-                continue
-            for failure in list(case.findall('failure')) + list(case.findall('error')):
-                detail = ' '.join((failure.get('type', ''), failure.get('message', ''),
-                                   failure.text or ''))
-                if exception in detail and source_file in detail:
-                    return True
     return False
 
 
@@ -183,12 +140,19 @@ def app_frame_paths(name, event_text, checkout):
 
 
 def verify_and_commit(name, alert, issue_number, checkout, issue, event_text, proposal,
-                      runner=run):
-    """Return a commit only after a new test fails before and passes after."""
-    bot.validate(alert)
+                      ci=None):
+    """Return a commit only after its regression fails before and passes after on CI.
+
+    Two commits share the base as parent: a test-only commit that must fail with
+    the observed exception, and the test+fix commit that must pass the full
+    workflow. Only the second one is ever published, unchanged.
+    """
+    _, target, _, _ = bot.validate(alert)
     checkout = Path(checkout).resolve(strict=True)
     if git(checkout, 'status', '--porcelain'):
         raise ValueError('Repair checkout must be clean')
+    if not (checkout / WORKFLOW).is_file():
+        raise ValueError('Target base lacks the secret-free verify workflow')
     root = proposal.get('root_cause_file')
     test_file = proposal.get('test_file')
     frames = app_frame_paths(name, event_text, checkout)
@@ -201,41 +165,49 @@ def verify_and_commit(name, alert, issue_number, checkout, issue, event_text, pr
     if exception not in (proposal.get('causal_explanation') or '') or Path(root).name not in (
             proposal.get('causal_explanation') or ''):
         raise ValueError('Proposal does not connect source and observed exception')
-    command, module, task, test_class = test_contract(name, test_file)
+    _, _, _, test_class = test_contract(name, test_file)
     check_patch(proposal.get('regression_patch'), test_file, checkout, True)
     check_patch(proposal.get('fix_patch'), root, checkout, False)
     hunk_lines = [int(value) for value in re.findall(r'^@@ -([0-9]+)',
                                                      proposal['fix_patch'], re.MULTILINE)]
     if not hunk_lines or not any(abs(line - hunk) <= 20 for line in lines for hunk in hunk_lines):
         raise ValueError('Fix patch is not near the observed app stack line')
+    base = git(checkout, 'rev-parse', 'HEAD')
     subprocess.run(['git', 'apply', '--index', '-'], input=proposal['regression_patch'],
                    text=True, cwd=checkout, check=True, capture_output=True, timeout=30)
-    test_digest = staged_digest(checkout)
-    before = runner(command, checkout, name=name)
-    if staged_digest(checkout) != test_digest:
-        raise RuntimeError('Regression execution modified staged code')
-    if before == 0 or not matching_regression_failure(checkout, module, task, test_class,
-                                                      exception, Path(root).name):
-        raise RuntimeError('Regression did not reproduce the observed exception and source')
+    git(checkout, 'commit', '-m', 'test: Crashlytics 회귀 테스트' if name == 'yeobee'
+        else 'test: add Crashlytics regression test')
+    before_sha = git(checkout, 'rev-parse', 'HEAD')
+    # Keep the staged test, drop the test-only commit: the fix commit's parent is the base.
+    git(checkout, 'reset', '--soft', base)
     subprocess.run(['git', 'apply', '--index', '-'], input=proposal['fix_patch'],
                    text=True, cwd=checkout, check=True, capture_output=True, timeout=30)
     changed = git(checkout, 'diff', '--cached', '--name-only').splitlines()
     if set(changed) != {root, test_file}:
         raise ValueError('Patch changed unexpected files')
-    fix_digest = staged_digest(checkout)
-    after = runner(command, checkout, name=name)
-    if staged_digest(checkout) != fix_digest:
-        raise RuntimeError('Fix execution modified staged code')
-    if after != 0 or report_has_failure(checkout, module, task, test_class):
-        raise RuntimeError('Regression did not pass after source fix')
     git(checkout, 'commit', '-m', 'fix: Crashlytics 크래시 수정' if name == 'yeobee'
         else 'fix: repair Crashlytics app crash')
     head = git(checkout, 'rev-parse', 'HEAD')
-    project_exit = runner(PROJECT_CHECKS[name], checkout, name=name)
-    if git(checkout, 'status', '--porcelain'):
-        raise RuntimeError('Project check changed checkout files')
-    verified = {'regression_before_exit': before, 'regression_after_exit': after,
-                'project_check_exit': project_exit, 'tested_head': head}
+    for sha in (before_sha, head):
+        if git(checkout, 'diff', '--name-only', base, sha, '--', '.github'):
+            raise ValueError('Repair commit touches workflow configuration')
+    if ci is None:
+        from repair_publish import github_client
+        ci = Actions(github_client(), target[2], checkout)
+    before = ci.verify(verify_branch(name, issue_number, 'before', before_sha), before_sha)
+    if (before.get('head_sha') != before_sha or before.get('conclusion') != 'failure'
+            or not matching_regression_failure(before.get('reports', []), test_class,
+                                               exception, Path(root).name)):
+        raise RuntimeError('Regression did not reproduce the observed exception and source')
+    after = ci.verify(verify_branch(name, issue_number, 'after', head), head)
+    if after.get('head_sha') != head or after.get('conclusion') != 'success':
+        raise RuntimeError('Verify workflow did not pass after the source fix')
+    if not regression_passed(after.get('reports', []), test_class):
+        raise RuntimeError('Regression did not run and pass after the source fix')
+    if git(checkout, 'rev-parse', 'HEAD') != head or git(checkout, 'status', '--porcelain'):
+        raise RuntimeError('Repair checkout changed during verification')
+    verified = {'regression_before_exit': 1, 'regression_after_exit': 0,
+                'project_check_exit': 0, 'tested_head': after['head_sha']}
     crash = {'event_id': issue.get('sampleEvent'), 'exception_type': issue.get('title'),
              'app_frames': frames,
              'shell_injected': 'CrashedByAdbException' in (issue.get('title') or '')
@@ -247,4 +219,5 @@ def verify_and_commit(name, alert, issue_number, checkout, issue, event_text, pr
     if decision.action != 'draft_pr':
         raise RuntimeError('Repair evidence gate did not authorize a PR: ' + ', '.join(decision.reasons))
     return {'head_sha': head, 'test_class': test_class, 'root_cause_file': root,
-            'verification': verified, 'changed_files': changed}
+            'verification': verified, 'changed_files': changed,
+            'before_run_url': before.get('url'), 'after_run_url': after.get('url')}

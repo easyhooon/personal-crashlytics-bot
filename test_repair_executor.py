@@ -7,12 +7,12 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
-import os
 
 import bot
 import mail_receiver
 from repair_executor import execute
-from repair_project import app_frame_paths, run, verify_and_commit
+from repair_ci import WORKFLOW, Actions
+from repair_project import app_frame_paths, verify_and_commit
 
 
 ALERT = {'project_id': bot.TARGETS['yeobee'][0], 'app_id': bot.TARGETS['yeobee'][1],
@@ -26,8 +26,27 @@ def command(path, *args):
     return result.stdout.strip()
 
 
-def fixture_runner(args, checkout, name=None):
-    return subprocess.run(args, cwd=checkout, capture_output=True, timeout=30).returncode
+class FakeActions:
+    """Simulates the verify workflow from the committed tree of the pushed SHA."""
+
+    def __init__(self, checkout, tamper=None):
+        self.checkout, self.tamper, self.calls = checkout, tamper or {}, []
+
+    def verify(self, branch, sha):
+        self.calls.append((branch, sha))
+        files = command(self.checkout, 'ls-tree', '-r', '--name-only', sha).splitlines()
+        fixed = 'fixed' in command(self.checkout, 'show', f'{sha}:{ROOT}')
+        reports = []
+        if TEST in files:
+            failure = '' if fixed else ('<failure type="java.lang.IllegalStateException" '
+                                        'message="Foo.kt:2">at Foo.kt:2</failure>')
+            reports.append(('<testsuite><testcase classname="com.yeobee.FooTest" name="regression">'
+                            + failure + '</testcase></testsuite>').encode())
+        result = {'conclusion': 'success' if fixed else 'failure', 'head_sha': sha,
+                  'url': f'https://example.test/runs/{sha[:7]}', 'reports': reports}
+        stage = 'before' if '-before-' in branch else 'after'
+        result.update(self.tamper.get(stage, {}))
+        return result
 
 
 def fixture(path):
@@ -36,20 +55,8 @@ def fixture(path):
     (root / TEST).parent.mkdir(parents=True)
     (root / ROOT).write_text('package com.yeobee\nclass Foo { val value = "broken" }\n')
     (root / '.gitignore').write_text('**/build/\n')
-    gradle = root / 'gradlew'
-    gradle.write_text('''#!/usr/bin/env python3
-from pathlib import Path
-import sys
-root = Path(__file__).resolve().parent
-fixed = 'fixed' in (root / 'module/src/main/kotlin/com/yeobee/Foo.kt').read_text()
-if '--tests' in sys.argv:
-    report = root / 'module/build/test-results/testDebugUnitTest/TEST-FooTest.xml'
-    report.parent.mkdir(parents=True, exist_ok=True)
-    failure = '' if fixed else '<failure type="java.lang.IllegalStateException" message="Foo.kt:2">at Foo.kt:2</failure>'
-    report.write_text('<testsuite><testcase classname="com.yeobee.FooTest" name="regression">' + failure + '</testcase></testsuite>')
-sys.exit(0 if fixed else 1)
-''')
-    gradle.chmod(0o755)
+    (root / WORKFLOW).parent.mkdir(parents=True)
+    (root / WORKFLOW).write_text('name: Crash Repair Verify\n')
     command(root, 'init', '-q', '-b', 'main')
     command(root, 'config', 'user.name', 'Fixture')
     command(root, 'config', 'user.email', 'fixture@example.test')
@@ -108,29 +115,111 @@ class FakeGitHub:
 
 
 class ExecutorTest(unittest.TestCase):
-    def test_default_runner_requires_network_disabled_codex_sandbox(self):
-        with tempfile.TemporaryDirectory() as temp:
-            def fake_run(command, **kwargs):
-                self.assertEqual(command[:5], ['codex', 'sandbox', '-P', 'repair-tests', '-C'])
-                self.assertIn('--sandbox-state-disable-network', command)
-                self.assertNotIn('GH_TOKEN', kwargs['env'])
-                return subprocess.CompletedProcess(command, 1)
-            with patch('repair_project.subprocess.run', side_effect=fake_run), \
-                    patch.dict(os.environ, {'GH_TOKEN': 'fixture-secret'}):
-                self.assertEqual(run(['./gradlew', 'test'], temp, name='yeobee'), 1)
+    def verify(self, temp, tamper=None):
+        proposal = fixture(temp)
+        ci = FakeActions(temp, tamper)
+        event = 'java.lang.IllegalStateException: broken\nat com.yeobee.Foo.crash (Foo.kt:2)'
+        result = verify_and_commit('yeobee', ALERT, 561, temp,
+                                   {'sampleEvent': 'sample-event', 'title': 'IllegalStateException'},
+                                   event, proposal, ci=ci)
+        return result, ci
 
-    def test_fixture_observes_new_test_fail_then_pass_and_project_check(self):
+    def test_ci_observes_test_fail_then_exact_head_pass(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result, ci = self.verify(temp)
+            base = command(temp, 'rev-parse', 'HEAD~1')
+            self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '2')
+            self.assertEqual(result['head_sha'], command(temp, 'rev-parse', 'HEAD'))
+            before_branch, before_sha = ci.calls[0]
+            after_branch, after_sha = ci.calls[1]
+            self.assertTrue(before_branch.startswith('crash-verify/yeobee-561-before-'))
+            self.assertTrue(after_branch.startswith('crash-verify/yeobee-561-after-'))
+            self.assertEqual(after_sha, result['head_sha'])
+            self.assertEqual(command(temp, 'rev-parse', before_sha + '~1'), base)
+            self.assertEqual(sorted(result['changed_files']), sorted([ROOT, TEST]))
+            self.assertEqual(result['after_run_url'], f'https://example.test/runs/{after_sha[:7]}')
+            self.assertEqual(command(temp, 'status', '--porcelain'), '')
+
+    def test_failing_after_run_cannot_authorize(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, 'did not pass'):
+                self.verify(temp, {'after': {'conclusion': 'failure'}})
+
+    def test_run_for_other_sha_cannot_authorize(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, 'did not pass'):
+                self.verify(temp, {'after': {'head_sha': 'c' * 40}})
+
+    def test_passing_before_run_cannot_authorize(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, 'did not reproduce'):
+                self.verify(temp, {'before': {'conclusion': 'success'}})
+
+    def test_unrelated_before_failure_cannot_authorize(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, 'did not reproduce'):
+                self.verify(temp, {'before': {'reports': [
+                    b'<testsuite><testcase classname="com.yeobee.Other" name="x">'
+                    b'<failure type="java.lang.IllegalStateException">Foo.kt:2</failure>'
+                    b'</testcase></testsuite>']}})
+
+    def test_wrong_exception_before_failure_cannot_authorize(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, 'did not reproduce'):
+                self.verify(temp, {'before': {'reports': [
+                    b'<testsuite><testcase classname="com.yeobee.FooTest" name="x">'
+                    b'<failure type="java.lang.NullPointerException">Foo.kt:2</failure>'
+                    b'</testcase></testsuite>']}})
+
+    def test_after_run_without_regression_report_cannot_authorize(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, 'did not run and pass'):
+                self.verify(temp, {'after': {'reports': []}})
+
+    def test_missing_verify_workflow_stops_before_commit(self):
         with tempfile.TemporaryDirectory() as temp:
             proposal = fixture(temp)
+            command(temp, 'rm', '-q', WORKFLOW)
+            command(temp, 'commit', '-qm', 'drop workflow')
             event = 'java.lang.IllegalStateException: broken\nat com.yeobee.Foo.crash (Foo.kt:2)'
-            self.assertEqual(app_frame_paths('yeobee', event, Path(temp)), [ROOT])
-            result = verify_and_commit('yeobee', ALERT, 561, temp,
-                                       {'sampleEvent': 'sample-event', 'title': 'IllegalStateException'},
-                                       event, proposal, runner=fixture_runner)
-            self.assertEqual(result['verification']['regression_before_exit'], 1)
-            self.assertEqual(result['verification']['regression_after_exit'], 0)
-            self.assertEqual(result['verification']['project_check_exit'], 0)
-            self.assertEqual(command(temp, 'status', '--porcelain'), '')
+            ci = FakeActions(temp)
+            with self.assertRaisesRegex(ValueError, 'verify workflow'):
+                verify_and_commit('yeobee', ALERT, 561, temp,
+                                  {'sampleEvent': 'sample-event', 'title': 'IllegalStateException'},
+                                  event, proposal, ci=ci)
+            self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '2')
+            self.assertFalse(ci.calls)
+
+    def test_actions_wait_accepts_only_exact_workflow_branch_and_sha(self):
+        sha = 'd' * 40
+        branch = 'crash-verify/yeobee-561-after-dddddddddddd'
+        responses = [
+            {'workflow_runs': [{'path': '.github/workflows/android-ci.yml', 'head_branch': branch,
+                                'head_sha': sha, 'status': 'completed', 'conclusion': 'success'}]},
+            {'workflow_runs': [{'path': WORKFLOW, 'head_branch': branch, 'head_sha': sha,
+                                'status': 'in_progress'}]},
+            {'workflow_runs': [{'path': WORKFLOW, 'head_branch': branch, 'head_sha': sha,
+                                'status': 'completed', 'conclusion': 'failure'}]},
+        ]
+        class Gh:
+            def api(self, path):
+                self.path = path
+                return responses.pop(0)
+        gh = Gh()
+        run = Actions(gh, 'YeoBee-official/YeoBee-Android', '.', sleep=lambda _: None).wait(branch, sha)
+        self.assertEqual(run['conclusion'], 'failure')
+        self.assertIn(f'head_sha={sha}', gh.path)
+        self.assertFalse(responses)
+
+    def test_actions_wait_rejects_ambiguous_runs(self):
+        sha = 'd' * 40
+        branch = 'crash-verify/x'
+        row = {'path': WORKFLOW, 'head_branch': branch, 'head_sha': sha, 'status': 'completed'}
+        class Gh:
+            def api(self, _):
+                return {'workflow_runs': [row, dict(row)]}
+        with self.assertRaisesRegex(RuntimeError, 'Ambiguous'):
+            Actions(Gh(), 'r', '.', sleep=lambda _: None).wait(branch, sha)
 
     def test_shell_test_stops_before_codex_or_patch(self):
         gh = FakeGitHub()
@@ -141,16 +230,46 @@ class ExecutorTest(unittest.TestCase):
         self.assertEqual(result['status'], 'issue-only-shell-test')
         self.assertEqual(len(gh.comments), 1)
 
-    def test_formal_failure_with_wrong_exception_cannot_commit(self):
+    def test_insufficient_evidence_posts_analysis_without_worktree_or_pr(self):
+        gh = FakeGitHub()
+        def no_fix(*_):
+            return {'decision': 'no_code_fix'}
+        def unexpected(*_, **__):
+            raise AssertionError('No repair step may run without evidence')
+        with patch('repair_executor.prepare_worktree', side_effect=unexpected) as worktree:
+            result = execute(ALERT, 561, '.', '.', mcp_factory=NormalMcp, proposer=no_fix,
+                             verifier=unexpected, publisher=unexpected, gh=gh,
+                             reviewer='LeeOhHyung')
+        self.assertEqual(result['status'], 'issue-only-insufficient-evidence')
+        self.assertEqual(len(gh.comments), 1)
+        worktree.assert_not_called()
+
+    def test_base_without_verify_workflow_stops_before_worktree(self):
         with tempfile.TemporaryDirectory() as temp:
-            proposal = fixture(temp)
-            proposal['causal_explanation'] = 'Foo.kt throws the observed NullPointerException.'
-            event = 'java.lang.NullPointerException: broken\nat com.yeobee.Foo.crash (Foo.kt:2)'
-            with self.assertRaises(RuntimeError):
-                verify_and_commit('yeobee', ALERT, 561, temp,
-                                  {'sampleEvent': 'sample-event', 'title': 'NullPointerException'},
-                                  event, proposal, runner=fixture_runner)
-            self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '1')
+            origin = Path(temp) / 'origin'
+            origin.mkdir()
+            command(origin, 'init', '-q', '-b', 'develop')
+            command(origin, 'config', 'user.name', 'Fixture')
+            command(origin, 'config', 'user.email', 'fixture@example.test')
+            (origin / 'README.md').write_text('base\n')
+            command(origin, 'add', '.')
+            command(origin, 'commit', '-qm', 'base')
+            source = Path(temp) / 'source'
+            subprocess.run(['git', 'clone', '-q', str(origin), str(source)], check=True)
+            command(source, 'remote', 'set-url', 'origin',
+                    'git@github-easyhooon:YeoBee-official/YeoBee-Android.git')
+            work = Path(temp) / 'work'
+            work.mkdir()
+            from repair_executor import prepare_worktree
+            real = subprocess.run
+            def no_network(args, **kwargs):
+                if args[:2] == ['git', 'fetch']:
+                    return subprocess.CompletedProcess(args, 0)
+                return real(args, **kwargs)
+            with patch('repair_executor.subprocess.run', side_effect=no_network):
+                with self.assertRaisesRegex(ValueError, 'verify workflow'):
+                    prepare_worktree('yeobee', source, work, 561)
+            self.assertEqual(list(work.iterdir()), [])
 
     def test_external_stack_cannot_become_app_fix(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -160,7 +279,7 @@ class ExecutorTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'app-owned frame'):
                 verify_and_commit('yeobee', ALERT, 561, temp,
                                   {'sampleEvent': 'sample-event', 'title': 'IllegalStateException'},
-                                  event, proposal, runner=fixture_runner)
+                                  event, proposal, ci=FakeActions(temp))
             self.assertEqual(command(temp, 'status', '--porcelain'), '')
 
     def test_repair_queue_deduplicates_exact_github_issue(self):
