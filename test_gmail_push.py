@@ -135,6 +135,19 @@ class PushTest(unittest.TestCase):
         receiver = gmail_push.Receiver(gmail, gh, push_config, runtime, state)
         return receiver, gmail, gh, runtime, state
 
+    def test_repair_worker_output_goes_to_owner_only_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receiver, *_ , state = self.make_receiver(tmp)
+            receiver.repair_config = Path(tmp) / 'repair.json'
+            with patch('gmail_push.subprocess.Popen') as popen:
+                receiver.kick_repair()
+            kwargs = popen.call_args.kwargs
+            self.assertIsInstance(kwargs['stdout'], int)
+            self.assertEqual(kwargs['stdout'], kwargs['stderr'])
+            log = state.with_name('repair.log')
+            self.assertTrue(log.exists())
+            self.assertFalse(log.stat().st_mode & 0o077)
+
     def test_watch_bootstrap_pagination_ack_and_redelivery(self):
         with tempfile.TemporaryDirectory() as tmp:
             receiver, gmail, gh, _, _ = self.make_receiver(tmp)

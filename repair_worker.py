@@ -78,17 +78,25 @@ def drain(state_file, config_path, executor=execute):
                 alert = json.loads(serialized)
                 name = bot.validate(alert)[0]
                 if name == 'yeobee' and 'yeobee_reviewer' in config:
-                    executor(alert, issue_number, config[name + '_checkout'], config['work_root'],
-                             reviewer=config['yeobee_reviewer'])
+                    result = executor(alert, issue_number, config[name + '_checkout'],
+                                      config['work_root'], reviewer=config['yeobee_reviewer'])
                 else:
-                    executor(alert, issue_number, config[name + '_checkout'], config['work_root'])
+                    result = executor(alert, issue_number, config[name + '_checkout'],
+                                      config['work_root'])
             except Exception as error:
                 finish(state_file, marker, False)
                 failed += 1
-                print(json.dumps({'repair_job': 'failed', 'error': type(error).__name__}), flush=True)
+                # Type only: messages can quote crash or command details.
+                print(json.dumps({'at': int(time.time()), 'repair_job': 'failed',
+                                  'issue_number': issue_number, 'error': type(error).__name__}),
+                      flush=True)
             else:
                 finish(state_file, marker, True)
                 completed += 1
+                result = result if isinstance(result, dict) else {}
+                print(json.dumps({'at': int(time.time()), 'repair_job': 'done',
+                                  'issue_number': issue_number, 'status': result.get('status'),
+                                  'pr_url': result.get('pr_url')}), flush=True)
     return {'completed': completed, 'failed': failed}
 
 

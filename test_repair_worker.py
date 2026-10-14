@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -31,6 +33,28 @@ def setup(temp):
 
 
 class WorkerTest(unittest.TestCase):
+    def test_log_lines_carry_outcome_without_error_messages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state, config = setup(temp)
+            output = io.StringIO()
+            def secret_failure(*_):
+                raise RuntimeError('crash text that must not be logged')
+            with contextlib.redirect_stdout(output):
+                repair_worker.drain(state, config, executor=secret_failure)
+            line = json.loads(output.getvalue().splitlines()[0])
+            self.assertEqual((line['repair_job'], line['issue_number'], line['error']),
+                             ('failed', 561, 'RuntimeError'))
+            self.assertNotIn('crash text', output.getvalue())
+            with sqlite3.connect(state) as db:
+                db.execute('UPDATE repair_jobs SET retry_after=0')
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                repair_worker.drain(state, config, executor=lambda *_: {
+                    'status': 'created-draft-pr', 'pr_url': 'https://example.test/pr'})
+            line = json.loads(output.getvalue().splitlines()[0])
+            self.assertEqual((line['repair_job'], line['status'], line['pr_url']),
+                             ('done', 'created-draft-pr', 'https://example.test/pr'))
+
     def test_failure_cools_down_then_retry_completes_once(self):
         with tempfile.TemporaryDirectory() as temp:
             state, config = setup(temp)
