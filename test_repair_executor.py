@@ -12,7 +12,7 @@ import bot
 import mail_receiver
 from repair_executor import execute
 from repair_ci import WORKFLOW, Actions
-from repair_project import app_frame_paths, observed_exception, verify_and_commit
+from repair_project import app_frame_paths, observed_exception, test_contract, verify_and_commit
 
 
 ALERT = {'project_id': bot.TARGETS['yeobee'][0], 'app_id': bot.TARGETS['yeobee'][1],
@@ -189,6 +189,15 @@ class ExecutorTest(unittest.TestCase):
                                   event, proposal, ci=ci)
             self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '2')
             self.assertFalse(ci.calls)
+
+    def test_contract_accepts_debug_unit_test_source_sets(self):
+        for path in ('app/src/test/kotlin/com/yeobee/debug/AmountTextTest.kt',
+                     'app/src/testDebug/kotlin/com/yeobee/debug/AmountTextTest.kt'):
+            command, module, task, test_class = test_contract('yeobee', path)
+            self.assertEqual((module, task, test_class),
+                             ('app', 'testDebugUnitTest', 'com.yeobee.debug.AmountTextTest'))
+        with self.assertRaises(ValueError):
+            test_contract('yeobee', 'app/src/androidTest/kotlin/com/yeobee/FooTest.kt')
 
     def test_observed_exception_uses_innermost_cause(self):
         event = ('java.lang.RuntimeException: Unable to start activity\n'

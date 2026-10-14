@@ -62,9 +62,9 @@ def test_contract(name, test_file):
     module, source = test_file.split('/src/', 1)
     if not module or not all(re.fullmatch(r'[a-z][a-z0-9-]*', part) for part in module.split('/')):
         raise ValueError('Invalid Gradle module path')
-    if name == 'yeobee' and source.startswith('test/kotlin/'):
+    if name == 'yeobee' and source.startswith(('test/kotlin/', 'testDebug/kotlin/')):
         task = 'testDebugUnitTest'
-        class_path = source[len('test/kotlin/'):]
+        class_path = source.split('/kotlin/', 1)[1]
     elif name == 'bandalart' and source.startswith(('commonTest/kotlin/', 'androidHostTest/kotlin/')):
         task = 'testAndroidHostTest'
         class_path = source.split('/kotlin/', 1)[1]
