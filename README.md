@@ -14,29 +14,75 @@
 - Gmail 메시지 ID를 로컬 SQLite에 기록하고, 이슈 marker와 단일 호스트 lock으로 재전달·동시 실행의 중복 쓰기를 막는다. 불확실한 이슈 생성 결과는 재조회하고 자동 재생성을 보류한다.
 - 직접 Gmail `watch` → Pub/Sub → `history.list` 수신 코드 [gmail_push.py](gmail_push.py)가 운영 Mac의 LaunchAgent로 실행 중이다. 받은 history의 모든 페이지를 처리한 뒤 cursor를 저장하고 Pub/Sub를 ACK한다. 2026-10-13에는 여비 개발 앱의 셸 주입 테스트 알림 한 건이 이 경로로 이슈 #561까지 전달됐다. 운영 앱에서 자연 발생한 크래시의 자동 수정은 검증되지 않았다.
 
-## 이슈에서 수정 PR까지의 경계
+## 아키텍처
 
 ```mermaid
 flowchart TD
-    A[Crashlytics 알림] --> B[Gmail watch · Pub/Sub]
-    B --> C[발신·앱 검증 / 중복 방지]
-    C --> D[대상 저장소 GitHub 이슈]
-    D -. 선택 기능, 운영 미활성 .-> E[Firebase MCP 이슈·샘플 이벤트 읽기]
-    E -.-> F[Codex CLI 읽기 전용 코드·stack 분석]
-    F -.-> G{앱 코드 원인과 수정 근거 확인?}
-    G -. 근거 부족·외부 원인·테스트 크래시 .-> S[확인 사실·가설·추가 정보 기록 후 STOP]
-    G -. 확인 .-> H[이슈별 worktree에 회귀 테스트 커밋 A · 테스트+수정 커밋 B]
-    H -.-> I[crash-verify 브랜치 push → 대상 저장소의 시크릿 없는 검증 워크플로]
-    I -.-> K{A는 관찰한 예외로 실패 · B는 전체 검사 통과 · run SHA 일치?}
-    K -. 실패·불일치·검증 불가 .-> S
-    K -. 통과 .-> J[커밋 B를 그대로 push · Draft PR · 기존 CI는 Ready for review 때 실행]
+    subgraph MAC["운영 Mac · 이 저장소"]
+        A["Crashlytics 알림 메일"] --> B["gmail_push.py<br/>Gmail watch · Pub/Sub 수신"]
+        B --> C["bot.py<br/>발신·앱 검증 · 중복 방지"]
+        W["repair_worker.py<br/>SQLite 작업 큐"]
+        T{"repair_triage.py<br/>셸 주입 테스트 크래시?"}
+        G{"repair_project.py<br/>앱 stack·예외·라인과 패치 대조"}
+        V{"repair_ci.py<br/>A 실패 · B 통과 · SHA 일치?"}
+        P["repair_publish.py<br/>커밋 B 그대로 Draft PR"]
+    end
+
+    subgraph LLM["🤖 LLM 개입 · Codex CLI 읽기 전용"]
+        F["Firebase MCP로 이슈·샘플 이벤트 읽기<br/>원인 설명 + 회귀 테스트 패치 + 수정 패치 제안<br/>또는 no_code_fix"]
+    end
+
+    subgraph GH["GitHub · 대상 저장소"]
+        D["GitHub 이슈"]
+        subgraph AD["어댑터: .github/workflows/crash-repair-verify.yml"]
+            YB["YeoBee-Android<br/>ubuntu · ktlint · detekt · testDebugUnitTest"]
+            BA["BandalArt-KMP<br/>macOS · spotless · detekt · allTests"]
+        end
+        PR["Draft PR<br/>사람 리뷰 후 Ready → 기존 CI"]
+    end
+
+    C --> D
+    C -. "--repair-config 시" .-> W
+    W -.-> T
+    T -. 예 .-> S["이슈에 판단 기록 후 STOP"]
+    T -. 아니오 .-> F
+    F -. no_code_fix .-> S
+    F -. 패치 제안 .-> G
+    G -. 불일치 .-> S
+    G -. "커밋 A·B를 crash-verify/** 로 push" .-> AD
+    AD -. "run 결과 · JUnit XML" .-> V
+    V -. 실패 .-> S
+    V -. 통과 .-> P --> PR
+
+    classDef llm fill:#fde68a,stroke:#b45309,color:#000
+    class F llm
 ```
 
-실선은 현재 운영 중인 이슈 생성 경로다. 점선은 코드에 구현했지만 운영 수신기에 활성화하지 않은 분석·수정 경로다. `--repair-config`를 명시하면 새 이슈를 SQLite 작업 큐에 넣고 Pub/Sub ACK 뒤 별도 worker를 깨운다. 기존 메일 수신·ACK는 분석 실패와 분리된다. worker는 시작 시에도 미완료 작업을 재개하지만, 1시간 재시도 시각만으로 실행되는 별도 예약은 없다. 현재 서비스와 복구 예약에는 이 옵션이 없다. 검증 워크플로는 여비 #563·반다라트 #438에서 리뷰 중이며, 실제 Actions에서 성공·실패 경로를 smoke로 확인했다. 실제 앱 크래시의 자동 Draft PR은 아직 검증되지 않았다.
+실선은 운영 중인 이슈 생성 경로이고, 점선은 구현했지만 운영에서 켜지 않은(`--repair-config` 없음) 수정 경로다.
 
-Codex의 입력은 허용된 Android 앱 ID와 Crashlytics 이슈 ID, 대상 checkout으로 제한한다. Firebase CLI MCP에서 이슈와 샘플 이벤트를 읽으며 Gmail 원문·토큰·개인 주소를 프롬프트나 GitHub 이슈에 전달하지 않는다. 모델은 읽기 전용으로 구조화된 원인 설명과 두 패치만 제안한다. 별도 실행기가 앱 소유 stack과 수정 파일·라인을 대조한 뒤, 기준 브랜치 위에 회귀 테스트만 담은 커밋 A와 테스트+수정 커밋 B를 만든다.
+### LLM이 개입하는 곳
+- **딱 한 번**: 셸 주입 테스트가 아닌 크래시에서 원인을 분석하고 패치를 *제안*할 때다(`codex_repair.py`)
+- 입력은 앱 ID·Crashlytics 이슈 ID·대상 checkout뿐이다. Gmail 원문과 토큰은 넘기지 않는다
+- 읽기 전용으로 실행한다. 파일 수정, 명령 실행, GitHub 쓰기를 하지 않는다
+- 판단은 코드가 한다. stack 대조, 테스트 실패·통과, SHA 일치를 확인하고, 모델의 확신이나 "테스트 통과" 주장은 근거로 쓰지 않는다
 
-생성 코드는 이 Mac에서 실행하지 않고 대상 저장소의 GitHub Actions에서 검증한다. 대상 저장소 기준 브랜치에 있는 `crash-repair-verify.yml`은 `crash-verify/**` push에서만 돌고, 시크릿을 참조하지 않으며, `contents: read` 토큰을 checkout에 남기지 않는다. 봇은 워크플로 파일 경로·브랜치·head SHA가 정확히 일치하는 run만 인정한다. A는 실패해야 하고 업로드된 JUnit XML에 관찰한 예외와 원인 파일이 있어야 한다. B는 회귀 테스트와 전체 검사가 통과해야 한다. Draft PR의 HEAD는 검증한 B 커밋 그대로이며 PR 본문에 두 run 링크를 남긴다. 기존 Android CI는 시크릿을 쓰므로 Draft PR에서는 돌지 않고, 사람이 검토한 뒤 Ready for review로 바꿀 때 실행된다. 자동 병합은 하지 않는다. GitHub 쓰기는 별도로 `easyhooon` 토큰을 프로세스 환경에만 넣어 사용하고 전역 `gh` 계정을 바꾸지 않는다. 제조사 한정 보고도 앱 코드 근거가 있으면 같은 기준으로 검토한다. 외부 원인·셸 주입·근거 부족·검증 실패에서는 분석 이슈에 남기고 멈춘다. 상세 경계와 검사 결과는 [수정 판단 문서](docs/REPAIR_EVIDENCE_GATE.md)에 있다.
+### 대상 저장소 어댑터
+봇은 앱과 무관하게 같은 절차로 동작한다. 그 저장소를 어떻게 빌드하고 테스트하는지는 각 저장소의 `crash-repair-verify.yml`이 맡는다.
+
+| 저장소 | 어댑터 | 실행 |
+|---|---|---|
+| YeoBee-Android | [#563](https://github.com/YeoBee-official/YeoBee-Android/pull/563) | ubuntu, `testDebugUnitTest ktlintCheck detekt :app:assembleDebug` |
+| BandalArt-KMP | [#438](https://github.com/Nexters/BandalArt-KMP/pull/438) | macOS, `spotlessCheck`(변경분) `detekt allTests :androidApp:testDebugUnitTest :androidApp:assembleDebug` |
+
+- 봇과의 약속: `crash-verify/**` push에서 실행, 이 파일 경로, JUnit XML을 `test-results` artifact로 업로드
+- 안전: 시크릿 없음(더미 keystore), `contents: read`, checkout에 토큰 안 남김. 기존 CI는 Draft PR에서 돌지 않는다
+- AI 패치는 `.github`를 못 바꾼다. 검사 항목을 바꾸려면 어댑터를 사람이 리뷰해서 고친다
+- 앱 추가: 어댑터 파일 1개 + 봇의 `bot.TARGETS`·`ANDROID_PACKAGES`·`test_contract` 설정
+
+### 검증 상태
+- 실제 Actions에서 성공·실패 경로 smoke 확인([판단 문서](docs/REPAIR_EVIDENCE_GATE.md)에 run 링크)
+- 실제 앱 크래시로 Draft PR까지 간 종단 간 검증은 아직 없다
+- 자동 병합은 하지 않는다
 
 ## 빠른 실행
 
