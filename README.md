@@ -29,7 +29,7 @@ flowchart TD
     end
 
     subgraph LLM["🤖 LLM 개입 · Codex CLI 읽기 전용"]
-        F["Firebase MCP로 이슈·샘플 이벤트 읽기<br/>원인 설명 + 회귀 테스트 패치 + 수정 패치 제안<br/>또는 no_code_fix"]
+        F["Firebase MCP 읽기 전용 도구로 이슈·샘플 이벤트 읽기<br/>원인 설명 + 회귀 테스트 패치 + 수정 패치 제안<br/>또는 no_code_fix"]
     end
 
     subgraph GH["GitHub · 대상 저장소"]
@@ -64,6 +64,7 @@ flowchart TD
 - **딱 한 번**: 셸 주입 테스트가 아닌 크래시에서 원인을 분석하고 패치를 *제안*할 때다(`codex_repair.py`)
 - 입력은 앱 ID·Crashlytics 이슈 ID·대상 checkout뿐이다. Gmail 원문과 토큰은 넘기지 않는다
 - 읽기 전용으로 실행한다. 파일 수정, 명령 실행, GitHub 쓰기를 하지 않는다
+- Firebase MCP는 LLM이 아니라 읽기 전용 데이터 통로다. 봇 코드와 Codex 모두 `crashlytics_get_issue`·`crashlytics_list_events` 두 도구만 쓴다. 쓰기 도구(이슈 수정·노트)는 열지 않는다
 - 판단은 코드가 한다. stack 대조, 테스트 실패·통과, SHA 일치를 확인하고, 모델의 확신이나 "테스트 통과" 주장은 근거로 쓰지 않는다
 
 ### 대상 저장소 어댑터

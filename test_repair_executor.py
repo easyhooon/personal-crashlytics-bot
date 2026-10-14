@@ -12,7 +12,7 @@ import bot
 import mail_receiver
 from repair_executor import execute
 from repair_ci import WORKFLOW, Actions
-from repair_project import app_frame_paths, verify_and_commit
+from repair_project import app_frame_paths, observed_exception, verify_and_commit
 
 
 ALERT = {'project_id': bot.TARGETS['yeobee'][0], 'app_id': bot.TARGETS['yeobee'][1],
@@ -189,6 +189,16 @@ class ExecutorTest(unittest.TestCase):
                                   event, proposal, ci=ci)
             self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '2')
             self.assertFalse(ci.calls)
+
+    def test_observed_exception_uses_innermost_cause(self):
+        event = ('java.lang.RuntimeException: Unable to start activity\n'
+                 'Caused by: java.lang.IllegalArgumentException: wrapped\n'
+                 'Caused by: java.lang.NumberFormatException: For input string: "1,000"\n'
+                 'at com.yeobee.debug.AmountText.parseWon (AmountText.kt:5)')
+        self.assertEqual(observed_exception(event), 'NumberFormatException')
+        self.assertEqual(observed_exception('java.lang.IllegalStateException: x'),
+                         'IllegalStateException')
+        self.assertIsNone(observed_exception('no exception here'))
 
     def test_actions_wait_accepts_only_exact_workflow_branch_and_sha(self):
         sha = 'd' * 40

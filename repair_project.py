@@ -106,8 +106,11 @@ def matching_regression_failure(reports, test_class, exception, source_file):
 
 
 def observed_exception(event_text):
-    found = re.search(r'\b([A-Za-z_$][\w.$]*(?:Exception|Error)):', event_text)
-    return found.group(1).rsplit('.', 1)[-1] if found else None
+    """Root cause: the innermost ``Caused by:`` exception, else the top-level one."""
+    causes = re.findall(r'Caused by:\s*([A-Za-z_$][\w.$]*(?:Exception|Error)):', event_text)
+    found = causes[-1] if causes else (
+        re.search(r'\b([A-Za-z_$][\w.$]*(?:Exception|Error)):', event_text) or [None, None])[1]
+    return found.rsplit('.', 1)[-1] if found else None
 
 
 def app_stack_lines(event_text, source_file):
