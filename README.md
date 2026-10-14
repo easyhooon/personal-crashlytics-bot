@@ -4,7 +4,7 @@
 
 ## 소개
 
-여비([YeoBee-Android](https://github.com/YeoBee-official/YeoBee-Android))와 반다라트([BandalArt-KMP](https://github.com/Nexters/BandalArt-KMP))의 Android Crashlytics 이메일 알림을 각 저장소의 GitHub 이슈에 연결한다. 현재 운영 자동 처리 범위는 **이슈 생성·갱신**이다. LLM 원인 분석, 코드 수정, 수정 PR 생성은 운영 수신기에 연결되지 않았다.
+여비([YeoBee-Android](https://github.com/YeoBee-official/YeoBee-Android))와 반다라트([BandalArt-KMP](https://github.com/Nexters/BandalArt-KMP))의 Android Crashlytics 이메일 알림을 각 저장소의 GitHub 이슈에 연결한다. 운영 수신기는 이슈를 만든 뒤 **원인 분석 → 시크릿 없는 CI 검증 → Draft PR**까지 자동으로 진행한다(2026-10-14 16:42 KST부터). 근거가 없거나 검증에 실패하면 이슈에 판단만 남기고 멈추며, 병합은 사람이 한다.
 
 ## 핵심 동작
 
@@ -42,7 +42,7 @@ flowchart TD
     end
 
     C --> D
-    C -. "--repair-config 시" .-> W
+    C --> W
     W -.-> T
     T -. 예 .-> S["이슈에 판단 기록 후 STOP"]
     T -. 아니오 .-> F
@@ -58,7 +58,7 @@ flowchart TD
     class F llm
 ```
 
-실선은 운영 중인 이슈 생성 경로이고, 점선은 구현했지만 운영에서 켜지 않은(`--repair-config` 없음) 수정 경로다.
+실선은 항상 도는 경로이고, 점선은 판단 결과에 따라 갈리는 경로다. 운영 수신기는 `--repair-config`로 수정 worker를 켠다.
 
 ### LLM이 개입하는 곳
 - **딱 한 번**: 셸 주입 테스트가 아닌 크래시에서 원인을 분석하고 패치를 *제안*할 때다(`codex_repair.py`)
@@ -100,6 +100,14 @@ python3 -B bot.py --alert-file /absolute/path/alert.json --dry-run
 ## 현재 운영 상태
 
 2026-10-13에 확인한 로컬 Codex 예약 `개인 Crashlytics Gmail 수신`은 **1시간 복구 조회로 ACTIVE**다. 과거 문서의 15분 주기는 현재 설정과 다르다. 개인 Cloud에서 Gmail API·Pub/Sub API, OAuth 테스트 앱·Desktop 클라이언트, Pub/Sub 주제·pull 구독·Gmail 게시 권한을 확인했다. Gmail·Pub/Sub 단일 범위 OAuth의 별도 프로세스 접근, Gmail watch 등록·일일 갱신, Mac 상주 수신기, 실제 테스트 알림의 history 조회·cursor 저장·ACK와 GitHub 이슈 생성을 확인했다. 시간별 복구 예약은 계속 유지 중이다.
+
+2026-10-14부터 운영 LaunchAgent(`com.easyhooon.personal-crashlytics-bot.push`)에 `--repair-config var/repair.json`을 붙여 수정 경로를 켰다.
+- 설정: 여비·반다라트 전용 clean clone(`~/crash-repair-e2e`), 작업 폴더, 리뷰어, `start_epoch`(이 시각 이전 이슈는 처리하지 않음). 파일 권한은 600이다
+- LaunchAgent PATH에 `~/.local/bin`(codex)을 추가했다
+- worker 결과는 `var/repair.log`에 한 줄 JSON으로 남는다(이슈 번호, 결과, PR URL 또는 오류 종류만)
+- 끄려면 plist에서 `--repair-config` 두 인자를 지우고 `launchctl bootout`/`bootstrap`으로 다시 올린다
+- 재시도 타이머는 없다. 실패한 작업은 다음 메일 수신이나 수신기 재시작 때 다시 시도한다(최대 3회, 1시간 간격)
+- 1시간 복구 예약(`--recover`)에는 `--repair-config`를 붙이지 않았다
 
 ## 상세 문서
 

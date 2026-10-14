@@ -1,6 +1,6 @@
 # 크래시 수정 판단 경계
 
-현재 운영 수신기는 인증된 Crashlytics 메일을 개인 GitHub 이슈로 기록한다. 선택적 자동 분석·수정·Draft PR 코드는 구현됐지만 운영 LaunchAgent와 1시간 복구 예약에는 `--repair-config`가 없어 활성화되지 않았다. `bot.py --probe`는 README를 바꾸는 합성 연결 검사이며 크래시 수정 경로가 아니다.
+운영 수신기는 인증된 Crashlytics 메일을 개인 GitHub 이슈로 기록하고, 2026-10-14부터 운영 LaunchAgent의 `--repair-config`로 자동 분석·수정·Draft PR 경로를 실행한다. 1시간 복구 예약에는 붙이지 않았다. `bot.py --probe`는 README를 바꾸는 합성 연결 검사이며 크래시 수정 경로가 아니다.
 
 `crashlytics_mcp.py`는 Firebase CLI의 공식 MCP 서버에서 `crashlytics_get_issue`와 `crashlytics_list_events` 두 읽기 전용 도구만 호출한다. 입력 앱과 이슈 ID는 `bot.TARGETS`로 검증한다. 샘플 이벤트에는 로그와 breadcrumb가 포함될 수 있으므로 원문을 stdout, GitHub, 저장소 파일에 출력하지 않는다. MCP 인증 실패·이슈 불일치·샘플 누락은 분석을 중단한다.
 

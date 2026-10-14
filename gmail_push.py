@@ -3,6 +3,7 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -103,10 +104,15 @@ class Receiver:
     def kick_repair(self):
         if self.repair_config is None:
             return
-        subprocess.Popen([sys.executable, str(Path(__file__).with_name('repair_worker.py')),
-                          '--state', str(self.state_file), '--config', str(self.repair_config)],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         close_fds=True, start_new_session=True)
+        # Owner-only log next to the state file; the worker writes no crash content to it.
+        log = os.open(self.state_file.with_name('repair.log'),
+                      os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            subprocess.Popen([sys.executable, str(Path(__file__).with_name('repair_worker.py')),
+                              '--state', str(self.state_file), '--config', str(self.repair_config)],
+                             stdout=log, stderr=log, close_fds=True, start_new_session=True)
+        finally:
+            os.close(log)
 
     def _cursor(self):
         with sqlite3.connect(self.state_file) as state:
