@@ -40,7 +40,11 @@ def check_patch(patch, expected_path, checkout, new_file):
         raise ValueError('Patch touches files outside the expected path')
     root = Path(checkout).resolve(strict=True)
     path = root / expected_path
-    if not path.parent.resolve(strict=True).is_relative_to(root):
+    parent = path.parent
+    while not parent.exists():
+        # A new test may create its source-set directory; check the nearest existing one.
+        parent = parent.parent
+    if not parent.resolve(strict=True).is_relative_to(root):
         raise ValueError('Patch path escapes checkout')
     if path.exists() == new_file or path.is_symlink():
         raise ValueError('Expected source/test file state mismatch')

@@ -190,6 +190,21 @@ class ExecutorTest(unittest.TestCase):
             self.assertEqual(command(temp, 'rev-list', '--count', 'HEAD'), '2')
             self.assertFalse(ci.calls)
 
+    def test_new_test_may_create_its_source_set_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture(temp)
+            test = 'module/src/testDebug/kotlin/com/yeobee/FooTest.kt'
+            (Path(temp) / test).parent.mkdir(parents=True)
+            (Path(temp) / test).write_text('package com.yeobee\nclass FooTest {}\n')
+            command(temp, 'add', '-N', test)
+            patch_text = command(temp, 'diff', '--', test) + '\n'
+            command(temp, 'reset', '-q', '--', test)
+            (Path(temp) / test).unlink()
+            for directory in ('kotlin/com/yeobee', 'kotlin/com', 'kotlin', ''):
+                (Path(temp) / 'module/src/testDebug' / directory).rmdir()
+            from repair_project import check_patch
+            check_patch(patch_text, test, temp, True)
+
     def test_contract_accepts_debug_unit_test_source_sets(self):
         for path in ('app/src/test/kotlin/com/yeobee/debug/AmountTextTest.kt',
                      'app/src/testDebug/kotlin/com/yeobee/debug/AmountTextTest.kt'):
