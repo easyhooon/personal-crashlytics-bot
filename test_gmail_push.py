@@ -68,6 +68,17 @@ class FakePubsubMessage:
 
 
 class PushTest(unittest.TestCase):
+    def test_repair_worker_kicks_only_after_ack_and_spawn_failure_keeps_ack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            receiver, _, _, _, _ = self.make_receiver(tmp)
+            receiver.repair_config = Path(tmp) / 'repair.json'
+            receiver._save('100')
+            with patch.object(gmail_push.subprocess, 'Popen', side_effect=OSError('fixture')) as spawn:
+                message = FakePubsubMessage('100')
+                self.assertTrue(gmail_push.on_pubsub_message(receiver, message))
+            self.assertEqual((message.acks, message.nacks), (1, 0))
+            spawn.assert_called_once()
+
     def test_keychain_oauth_info_requires_exact_scope_and_refresh_token(self):
         valid = {
             'scopes': ['https://www.googleapis.com/auth/gmail.readonly'],

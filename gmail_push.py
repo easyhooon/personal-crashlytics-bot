@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -88,15 +89,24 @@ class GmailApi:
 
 
 class Receiver:
-    def __init__(self, gmail, gh, push_config, runtime_config, state_file):
+    def __init__(self, gmail, gh, push_config, runtime_config, state_file, repair_config=None):
         self.gmail = gmail
         self.gh = gh
         self.config = load_config(push_config)
         self.runtime_config = Path(runtime_config)
         self.state_file = mail_receiver.prepare_state(state_file)
+        self.repair_config = Path(repair_config) if repair_config else None
         with sqlite3.connect(self.state_file) as state:
             state.execute('CREATE TABLE IF NOT EXISTS gmail_push_state '
                           '(singleton INTEGER PRIMARY KEY CHECK(singleton=1), cursor TEXT, watch_expiration INTEGER)')
+
+    def kick_repair(self):
+        if self.repair_config is None:
+            return
+        subprocess.Popen([sys.executable, str(Path(__file__).with_name('repair_worker.py')),
+                          '--state', str(self.state_file), '--config', str(self.repair_config)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         close_fds=True, start_new_session=True)
 
     def _cursor(self):
         with sqlite3.connect(self.state_file) as state:
@@ -219,6 +229,11 @@ def on_pubsub_message(receiver, message):
         return False
     message.ack()
     print(json.dumps({'pubsub': 'acked', 'status': result['status']}), flush=True)
+    try:
+        receiver.kick_repair()
+    except Exception as error:
+        # The SQLite job remains durable; do not replay an already ACKed email.
+        print(json.dumps({'repair_kick': 'failed', 'error': type(error).__name__}), flush=True)
     return True
 
 
@@ -271,7 +286,8 @@ def live_receiver(args):
     from google.cloud import pubsub_v1
     credentials = keychain_gmail_credentials()
     gmail = GmailApi(build('gmail', 'v1', credentials=credentials, cache_discovery=False))
-    receiver = Receiver(gmail, bot.GitHub(), args.config, args.runtime_config, args.state)
+    receiver = Receiver(gmail, bot.GitHub(), args.config, args.runtime_config, args.state,
+                        getattr(args, 'repair_config', None))
     return receiver, pubsub_v1
 
 
@@ -284,13 +300,16 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--runtime-config', type=Path, required=True)
     parser.add_argument('--state', type=Path, required=True)
+    parser.add_argument('--repair-config', type=Path)
     args = parser.parse_args()
     receiver, pubsub_v1 = live_receiver(args)
     if args.renew_watch:
         result = receiver.renew_watch()
     elif args.recover:
         result = receiver.reconcile()
+        receiver.kick_repair()
     else:
+        receiver.kick_repair()
         with pubsub_v1.SubscriberClient(credentials=keychain_pubsub_credentials()) as subscriber:
             future = subscriber.subscribe(receiver.config['subscription_name'],
                                           callback=lambda message: on_pubsub_message(receiver, message))

@@ -35,6 +35,10 @@ def prepare_state(state_file):
         state.execute('CREATE TABLE IF NOT EXISTS processed (id TEXT PRIMARY KEY, received_at TEXT DEFAULT CURRENT_TIMESTAMP)')
         state.execute('CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, lease_owner TEXT, lease_until INTEGER NOT NULL)')
         state.execute('CREATE TABLE IF NOT EXISTS issue_intents (marker TEXT PRIMARY KEY, started_at TEXT DEFAULT CURRENT_TIMESTAMP)')
+        state.execute('CREATE TABLE IF NOT EXISTS repair_jobs (marker TEXT PRIMARY KEY, alert_json TEXT NOT NULL, '
+                      'issue_number INTEGER NOT NULL, state TEXT NOT NULL DEFAULT "queued", '
+                      'attempts INTEGER NOT NULL DEFAULT 0, retry_after INTEGER NOT NULL DEFAULT 0, '
+                      'created_at INTEGER NOT NULL)')
     return state_file
 
 
@@ -137,6 +141,8 @@ def receive(gh, message, state_file, dry_run=False, expected_id=None):
             if not claimed:
                 raise RuntimeError('gmail-message-lease-lost')
             state.execute('INSERT INTO processed(id) VALUES (?)', (message_id,))
+            for alert, result, marker in zip(alerts, results, markers):
+                enqueue_repair(state, alert, result, marker)
             state.execute('DELETE FROM pending WHERE id=? AND lease_owner=?', (message_id, owner))
             state.executemany('DELETE FROM issue_intents WHERE marker=?', [(marker,) for marker in markers])
     except Exception:
@@ -145,6 +151,19 @@ def receive(gh, message, state_file, dry_run=False, expected_id=None):
             state.execute('UPDATE pending SET lease_until=0 WHERE id=? AND lease_owner=?', (message_id, owner))
         raise
     return {'status': 'processed' if alerts else 'ignored-non-target', 'alerts': len(alerts), 'results': results}
+
+
+def enqueue_repair(state, alert, result, marker):
+    """Record a technical-only repair task after the matching issue is known."""
+    if result.get('status') == 'closed-held':
+        return
+    repo = bot.validate(alert)[1][2]
+    match = re.fullmatch(r'https://github\.com/' + re.escape(repo) + r'/issues/([1-9][0-9]*)',
+                         result.get('issue_url', ''))
+    if match:
+        state.execute('INSERT OR IGNORE INTO repair_jobs(marker, alert_json, issue_number, created_at) '
+                      'VALUES (?, ?, ?, ?)', (marker, json.dumps(alert, sort_keys=True),
+                                             int(match.group(1)), int(time.time())))
 
 
 def sync_claimed(gh, alert, state_file):
