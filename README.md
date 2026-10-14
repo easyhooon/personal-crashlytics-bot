@@ -82,7 +82,8 @@ flowchart TD
 
 ### 검증 상태
 - 실제 Actions에서 성공·실패 경로 smoke 확인([판단 문서](docs/REPAIR_EVIDENCE_GATE.md)에 run 링크)
-- 실제 앱 크래시로 Draft PR까지 간 종단 간 검증은 아직 없다
+- 종단 간 검증(2026-10-14): 여비 개발 앱의 debug 전용 결함 크래시 → 이슈 [#566](https://github.com/YeoBee-official/YeoBee-Android/issues/566) → Codex 제안 → [A 실패](https://github.com/YeoBee-official/YeoBee-Android/actions/runs/38521796724)·[B 통과](https://github.com/YeoBee-official/YeoBee-Android/actions/runs/38522868819) → Draft PR [#567](https://github.com/YeoBee-official/YeoBee-Android/pull/567). Gmail 수신 단계는 수동 `bot.py` 실행으로 대신했다
+- 운영 앱에서 자연 발생한 크래시로는 아직 검증하지 않았다
 - 자동 병합은 하지 않는다
 
 ## 빠른 실행
