@@ -108,9 +108,11 @@ class Receiver:
         log = os.open(self.state_file.with_name('repair.log'),
                       os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
+            # posix_spawn, not fork: absolute executable, close_fds=False and no
+            # start_new_session. The worker detaches into its own session itself.
             subprocess.Popen([sys.executable, str(Path(__file__).with_name('repair_worker.py')),
                               '--state', str(self.state_file), '--config', str(self.repair_config)],
-                             stdout=log, stderr=log, close_fds=True, start_new_session=True)
+                             stdout=log, stderr=log, close_fds=False)
         finally:
             os.close(log)
 

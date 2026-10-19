@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -53,12 +54,17 @@ class GitHub:
             self.env['GH_TOKEN'] = result.stdout.strip()
         if not self.env['GH_TOKEN']:
             raise ValueError('easyhooon credential unavailable')
+        # An absolute path plus close_fds=False lets subprocess use posix_spawn
+        # instead of fork; forking the gRPC-threaded receiver can crash the child.
+        self.gh = shutil.which('gh', path=self.env.get('PATH'))
+        if not self.gh:
+            raise ValueError('gh CLI unavailable')
 
     def api(self, path, method='GET', data=None):
-        command = ['gh', 'api', '--hostname', 'github.com', path, '--method', method]
+        command = [self.gh, 'api', '--hostname', 'github.com', path, '--method', method]
         if data is not None:
             command += ['--input', '-']
-        result = subprocess.run(command, input=json.dumps(data) if data is not None else None, env=self.env, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(command, input=json.dumps(data) if data is not None else None, env=self.env, capture_output=True, text=True, timeout=60, close_fds=False)
         if result.returncode:
             # Never include API payloads or credentials in diagnostics.
             raise RuntimeError(f'GitHub {method} {path} failed (exit {result.returncode})')
