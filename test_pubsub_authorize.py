@@ -3,7 +3,7 @@ import unittest
 try:
     from oauthlib.oauth2 import WebApplicationClient
     from scripts.authorize_pubsub import (
-        SCOPE, authorization_response_url, scope_set,
+        KINDS, SCOPE, authorization_response_url, scope_set,
     )
 except ModuleNotFoundError:
     SCOPE = authorization_response_url = scope_set = None
@@ -11,6 +11,12 @@ except ModuleNotFoundError:
 
 @unittest.skipIf(scope_set is None, 'OAuth runtime dependencies unavailable')
 class PubsubAuthorizeTest(unittest.TestCase):
+    def test_kinds_match_receiver_keychain_items(self):
+        source = open('gmail_push.py').read()
+        for scope, service in KINDS.values():
+            self.assertIn(f"keychain_oauth_info('{service}', scope)", source)
+            self.assertIn(f"scope = '{scope}'", source)
+
     def test_scope_grant_accepts_google_string_or_sequence(self):
         self.assertEqual({SCOPE}, scope_set(SCOPE))
         self.assertEqual({SCOPE}, scope_set([SCOPE]))

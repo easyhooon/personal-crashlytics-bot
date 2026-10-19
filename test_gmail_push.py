@@ -148,6 +148,31 @@ class PushTest(unittest.TestCase):
             self.assertTrue(log.exists())
             self.assertFalse(log.stat().st_mode & 0o077)
 
+    def test_deleted_pending_message_is_skipped_not_retried_forever(self):
+        class NotFound(Exception):
+            resp = type('Resp', (), {'status': 404})()
+        with tempfile.TemporaryDirectory() as tmp:
+            receiver, gmail, gh, _, state = self.make_receiver(tmp)
+            receiver.renew_watch()
+            mail_receiver.enqueue('dead1', state)
+            gmail.messages = {'dead1': NotFound(), 'a1': gmail_message(message_id='a1')}
+            gmail.history_pages = [{'history': [{'messagesAdded': [{'message': {'id': 'a1'}}]}],
+                                    'historyId': '105'}]
+            self.assertTrue(gmail_push.on_pubsub_message(receiver, FakePubsubMessage(105)))
+            self.assertEqual(mail_receiver.pending_ids(state), [])
+            self.assertEqual(receiver._cursor(), '105')
+
+    def test_other_message_errors_still_block_and_retry(self):
+        class ServerError(Exception):
+            resp = type('Resp', (), {'status': 500})()
+        with tempfile.TemporaryDirectory() as tmp:
+            receiver, gmail, gh, _, state = self.make_receiver(tmp)
+            receiver.renew_watch()
+            mail_receiver.enqueue('beef1', state)
+            gmail.messages = {'beef1': ServerError()}
+            self.assertFalse(gmail_push.on_pubsub_message(receiver, FakePubsubMessage(105)))
+            self.assertEqual(mail_receiver.pending_ids(state), ['beef1'])
+
     def test_watch_bootstrap_pagination_ack_and_redelivery(self):
         with tempfile.TemporaryDirectory() as tmp:
             receiver, gmail, gh, _, _ = self.make_receiver(tmp)
