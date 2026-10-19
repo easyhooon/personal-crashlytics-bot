@@ -136,7 +136,16 @@ class Receiver:
         for message_id in dict.fromkeys(ids):
             if mail_receiver.enqueue(message_id, self.state_file)['status'] == 'already-processed':
                 continue
-            metadata = self.gmail.metadata_message(message_id)
+            try:
+                metadata = self.gmail.metadata_message(message_id)
+            except Exception as error:
+                # A message deleted after history recorded it returns 404 forever;
+                # retrying it would block the cursor and every later message.
+                if getattr(getattr(error, 'resp', None), 'status', None) != 404:
+                    raise
+                mail_receiver.discard_missing(message_id, self.state_file)
+                print(json.dumps({'gmail_message': 'missing-skipped'}), flush=True)
+                continue
             if metadata.get('id') != message_id:
                 raise ValueError('fetched-gmail-message-id-mismatch')
             message = (self.gmail.full_message(message_id) if mail_receiver.firebase_sender(metadata)

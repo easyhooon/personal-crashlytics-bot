@@ -1,4 +1,4 @@
-"""User-run, loopback Pub/Sub OAuth consent into the personal login Keychain."""
+"""User-run, loopback Gmail or Pub/Sub OAuth consent into the personal login Keychain."""
 
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -12,7 +12,12 @@ from urllib.parse import parse_qs, urlparse
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 
-SCOPE = 'https://www.googleapis.com/auth/pubsub'
+# Each kind is a separate least-scope credential and Keychain item read by gmail_push.py.
+KINDS = {
+    'pubsub': ('https://www.googleapis.com/auth/pubsub', 'personal-crashlytics-bot-pubsub-user'),
+    'gmail': ('https://www.googleapis.com/auth/gmail.readonly', 'personal-crashlytics-bot-oauth-user'),
+}
+SCOPE = KINDS['pubsub'][0]
 
 
 def scope_set(scopes):
@@ -53,9 +58,11 @@ def desktop_client(project):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project', required=True)
+    parser.add_argument('--kind', choices=sorted(KINDS), default='pubsub')
     args = parser.parse_args()
+    scope, service = KINDS[args.kind]
     flow = InstalledAppFlow.from_client_config(
-        desktop_client(args.project), scopes=[SCOPE])
+        desktop_client(args.project), scopes=[scope])
     complete = False
     outcome = 'authorization_incomplete'
 
@@ -77,20 +84,20 @@ def main():
                         self.path, server.server_port, state)
                     flow.fetch_token(authorization_response=response_url)
                     credentials = flow.credentials
-                    if (scope_set(credentials.scopes) != {SCOPE}
-                            or scope_set(credentials.granted_scopes) != {SCOPE}
+                    if (scope_set(credentials.scopes) != {scope}
+                            or scope_set(credentials.granted_scopes) != {scope}
                             or not credentials.refresh_token):
-                        raise ValueError('Pub/Sub scope or refresh token missing')
+                        raise ValueError('OAuth scope or refresh token missing')
                     writer = Path(__file__).with_name('store_pubsub_oauth.swift')
                     result = subprocess.run(
                         ['/usr/bin/swift', '-module-cache-path',
                          str(Path(tempfile.gettempdir()) / 'personal-crashlytics-swift-cache'),
-                         str(writer)],
+                         str(writer), service],
                         input=credentials.to_json().encode(), capture_output=True,
                     )
                     if result.returncode:
                         raise RuntimeError('login Keychain save denied')
-                    outcome = 'pubsub_oauth_keychain_saved'
+                    outcome = f'{args.kind}_oauth_keychain_saved'
                     self.send_response(302)
                     self.send_header('Location', '/done')
                 except Exception as error:
@@ -101,7 +108,7 @@ def main():
                 self.end_headers()
                 return
             if path.path in ('/done', '/failed'):
-                text = ('Pub/Sub OAuth saved. You may close this tab.'
+                text = ('OAuth saved. You may close this tab.'
                         if path.path == '/done' else
                         'Authorization failed. Check the Terminal status.')
                 body = text.encode()
@@ -127,7 +134,7 @@ def main():
         if complete:
             server.handle_request()
     print(outcome)
-    return 0 if outcome == 'pubsub_oauth_keychain_saved' else 1
+    return 0 if outcome.endswith('_oauth_keychain_saved') else 1
 
 
 if __name__ == '__main__':

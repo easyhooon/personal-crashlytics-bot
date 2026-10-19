@@ -186,6 +186,14 @@ def sync_claimed(gh, alert, state_file):
     return result, marker
 
 
+def discard_missing(message_id, state_file):
+    """Gmail no longer has this message (deleted): nothing to process, stop retrying it."""
+    valid_message_id(message_id)
+    with sqlite3.connect(prepare_state(state_file), timeout=30) as state:
+        state.execute('INSERT OR IGNORE INTO processed(id) VALUES (?)', (message_id,))
+        state.execute('DELETE FROM pending WHERE id=?', (message_id,))
+
+
 def pending_ids(state_file):
     state_file = Path(state_file)
     if not state_file.exists():
