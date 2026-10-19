@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -101,6 +102,11 @@ def drain(state_file, config_path, executor=execute):
 
 
 def main():
+    try:
+        # Outlive a receiver restart; the receiver spawns without start_new_session.
+        os.setsid()
+    except OSError:
+        pass  # Already a session leader.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--config', type=Path, required=True)
